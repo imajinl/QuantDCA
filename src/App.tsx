@@ -20,6 +20,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 import type { BacktestStrategy, ContributionFrequency, PricePoint, StrategyType, Transaction } from "./lib/backtest";
 import { CustomCsvParseError, parseCustomPriceCsv } from "./lib/customCsv";
 import { formatCompactCurrency, formatCurrency, formatNumber, formatPercent } from "./lib/format";
+import { LogoMark, MarketingSite } from "./MarketingSite";
 import type { MarketAsset } from "./server/providers/types";
 
 interface ApiBacktestResult {
@@ -68,7 +69,7 @@ interface SelectedAsset extends MarketAsset {
   prices?: PricePoint[];
 }
 
-const colors = ["#0f766e", "#64748b", "#a16207", "#7c3aed", "#be123c", "#15803d"];
+const colors = ["#0E6F66", "#9C6B1B", "#7C3AED", "#157A4A", "#B23A2E", "#5C6661"];
 
 const defaultStrategies: BacktestStrategy[] = [
   {
@@ -98,6 +99,16 @@ const defaultStrategies: BacktestStrategy[] = [
 ];
 
 export function App() {
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+
+  if (path !== "/app") {
+    return <MarketingSite path={path} />;
+  }
+
+  return <DashboardApp />;
+}
+
+function DashboardApp() {
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<MarketAsset[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<SelectedAsset[]>([]);
@@ -295,9 +306,9 @@ export function App() {
     <main className="app-shell">
       <header className="topbar" aria-label="QuantDCA Overview">
         <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">Q</span>
+          <LogoMark className="brand-mark" />
           <div>
-            <p className="eyebrow">QuantDCA</p>
+            <p className="eyebrow brand-wordmark">Quant<span>DCA</span></p>
             <h1>Strategy Comparison Console</h1>
           </div>
         </div>
@@ -426,7 +437,7 @@ export function App() {
           <div className="run-action">
             <button className="run-button" type="button" onClick={runBacktest} disabled={runStatus === "loading"}>
               <Play size={17} aria-hidden="true" />
-              {runStatus === "loading" ? "Running..." : "Run Backtest"}
+              {runStatus === "loading" ? "Running..." : "Run Backtests"}
             </button>
           </div>
           {error ? <p className="status-error" role="alert">{error}</p> : null}
@@ -929,6 +940,11 @@ function LineChart({
   const maxValue = Math.max(...allPoints.map((point) => point.value), 1);
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
+  const rankedRunIds = [...results].sort((left, right) => right.metrics.finalValue - left.metrics.finalValue).map((result) => result.runId);
+  const colorForResult = (result: ApiBacktestResult, fallbackIndex: number) => {
+    const rank = rankedRunIds.indexOf(result.runId);
+    return colors[(rank >= 0 ? rank : fallbackIndex) % colors.length];
+  };
   const xFor = (date: string) => padding.left + (dates.indexOf(date) / Math.max(dates.length - 1, 1)) * plotWidth;
   const yFor = (value: number) => padding.top + (1 - (value - minValue) / (maxValue - minValue || 1)) * plotHeight;
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => minValue + (maxValue - minValue) * ratio);
@@ -952,13 +968,13 @@ function LineChart({
         ))}
         {results.map((result, index) => {
           const path = result.series.map((point, pointIndex) => `${pointIndex === 0 ? "M" : "L"} ${xFor(point.date)} ${yFor(point[valueKey])}`).join(" ");
-          return <path key={result.runId} d={path} fill="none" stroke={colors[index % colors.length]} strokeWidth="2.3" />;
+          return <path key={result.runId} d={path} fill="none" stroke={colorForResult(result, index)} strokeWidth="2.3" />;
         })}
       </svg>
       <div className="chart-legend">
         {results.map((result, index) => (
           <span key={result.runId}>
-            <i style={{ background: colors[index % colors.length] }} />
+            <i style={{ background: colorForResult(result, index) }} />
             {label(result)}
           </span>
         ))}
@@ -1001,16 +1017,16 @@ function BalanceChart({ result }: { result: ApiBacktestResult }) {
             {result.series[index]?.date.slice(0, 7)}
           </text>
         ))}
-        <path d={pathFor("investedCapital")} fill="none" stroke="#64748b" strokeWidth="2.2" />
-        <path d={pathFor("portfolioValue")} fill="none" stroke="#0f766e" strokeWidth="2.4" />
+        <path d={pathFor("investedCapital")} fill="none" stroke="#A6A89A" strokeDasharray="5 5" strokeWidth="2.2" />
+        <path d={pathFor("portfolioValue")} fill="none" stroke="#0E6F66" strokeWidth="2.4" />
       </svg>
       <div className="chart-legend">
         <span>
-          <i style={{ background: "#64748b" }} />
+          <i style={{ background: "#A6A89A" }} />
           Invested
         </span>
         <span>
-          <i style={{ background: "#0f766e" }} />
+          <i style={{ background: "#0E6F66" }} />
           Value
         </span>
       </div>

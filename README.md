@@ -1,18 +1,48 @@
 # QuantDCA
 
-QuantDCA is a minimalist TypeScript dashboard for backtesting dollar-cost averaging strategies with EODHD market data. The first screen is the product: asset search, strategy configuration, backtest execution, charts, comparison tables, and transaction schedules.
+QuantDCA is a free, Ledger-styled financial analytics product for comparing dollar-cost-averaging strategies against lump sum and other contribution schedules. The public website introduces the product, methodology, and brand system; the working dashboard lives at `/app`.
 
-## Scope
+The product promise is simple: Replay real market history, compare strategies on equal capital, model fees and cash drag, and export every result.
 
-The v1 supports:
+## Product Surface
+
+The Vite app serves both the public site and the backtesting dashboard:
+
+- `/`: Ledger landing page — "Would DCA Have Beaten Lump Sum? Find Out Exactly."
+- `/product`: Product overview and workflow.
+- `/methodology`: Data, engine, metrics, and limits.
+- `/about`: Evidence-first manifesto.
+- `/brand`: Ledger brand system and visual tokens.
+- `/app`: Functional backtesting dashboard.
+
+The dashboard preserves the full v1 workflow:
 
 - EODHD-backed asset search through a server-side API route.
-- Historical daily price retrieval using adjusted close when available.
+- Historical daily prices using adjusted close when available.
+- Custom CSV uploads with strict parsing feedback.
 - Multi-asset and multi-strategy comparison.
-- Standard DCA, lump sum, and DCA variants by frequency and contribution amount.
-- Equalized capital comparison by default, with an explicit UI toggle for as-configured comparisons.
-- Transaction fees, cash drag on idle earmarked capital, non-trading-day rollover to the next available price date, and pure calculation logic independent from UI / API code.
+- DCA, lump sum, and frequency variants.
+- Equalized-capital comparison by default, with an explicit as-configured toggle.
+- Transaction fees, cash drag on idle earmarked capital, and non-trading-day rollover to the next available price date.
+- Comparison charts, metrics, transaction schedules, and CSV / JSON exports.
 - Deterministic mocked data for automated browser tests. Normal app runs do not silently fake market data.
+
+## Brand System
+
+QuantDCA uses the Ledger identity:
+
+- Warm paper canvas: `#F4F2EB`
+- Near-black green ink: `#15201C`
+- One teal signal: `#0E6F66`
+- Brass only for the second chart series: `#9C6B1B`
+- Graphite dashed invested-capital line: `#A6A89A`
+- Source Serif 4 for headlines and large metrics.
+- Archivo for body text and controls.
+- Spline Sans Mono for labels, tickers, parameters, and tabular figures.
+
+The logo is the averaging staircase mark: periodic equal buys stepping upward, with a teal dot at the crossing. The favicon is served from `public/assets/favicon.svg`.
+
+There is no pricing page, account requirement, upgrade copy, trial copy, or upsell language. The product is completely free for the time being.
 
 ## Setup
 
@@ -139,12 +169,20 @@ Next steps for GitHub:
 
 ## Architecture
 
+- `src/MarketingSite.tsx`: Public Ledger website pages and shared brand mark.
+- `src/Marketing.css`: Ledger website visual system.
+- `src/App.tsx`: Route switch plus functional dashboard UI at `/app`.
+- `src/App.css`: Ledger-styled dashboard visual system.
 - `src/lib/backtest.ts`: Pure backtest engine and metrics.
+- `src/lib/customCsv.ts`: Strict custom CSV parser.
 - `src/server/providers/eodhd.ts`: EODHD provider with response normalization, validation, caching, and explicit error mapping.
 - `src/server/api.ts`: Request handlers for asset search and backtest execution.
-- `src/App.tsx`: Dashboard UI.
-- `tests/e2e/dashboard.spec.ts`: Browser coverage for search, configuration, comparison, charts, errors, and mobile usability.
+- `tests/e2e/dashboard.spec.ts`: Browser coverage for marketing navigation, search, configuration, comparison, charts, exports, CSV upload, errors, and mobile usability.
 
-## Notes
+## Data Notes
 
 Cash drag is modeled as annualized growth / decay on idle earmarked capital before each available price date. Equalized-capital mode uses the largest planned strategy contribution amount as the comparison budget, then allocates that capital across each strategy's schedule.
+
+Custom CSV uploads require row 1 titles, column A dates beginning with `YYYY-MM-DD`, and column B positive USD prices. Extra columns are ignored.
+
+QuantDCA is for research and education, not investment advice. Past performance is not indicative of future results.
