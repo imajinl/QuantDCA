@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "${SKIP_PRE_PUSH:-}" = "1" ]; then
+  echo "Skipping pre-push checks because SKIP_PRE_PUSH=1."
+  exit 0
+fi
+
+if [ "${PRE_PUSH_QUICK:-}" = "1" ]; then
+  npm run prepush:quick
+else
+  npm run prepush
+fi

@@ -11,6 +11,11 @@
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
     "test:e2e": "playwright test",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run build && npm run test:e2e",
+    "prepush": "node scripts/pre-push.mjs",
+    "prepush:quick": "node scripts/pre-push.mjs --quick",
+    "audit:prod": "npm audit --omit=dev",
+    "hooks:install": "git config core.hooksPath .githooks",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint ."
   },
