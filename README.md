@@ -70,6 +70,7 @@ The frontend never receives the API key. Asset search and historical prices are 
 
 ```bash
 npm run dev
+npm start
 npm run test
 npm run typecheck
 npm run lint
@@ -82,6 +83,8 @@ npm run hooks:install
 
 `npm run dev` starts the API service on `127.0.0.1:8787` and the Vite app on `127.0.0.1:5173`.
 
+`npm start` runs the built production server from `dist-server/server/index.js`. Use it after `npm run build`.
+
 `npm run test:e2e` starts the same app with `QDCA_USE_MOCK_DATA=true`, so Playwright remains deterministic and does not consume EODHD quota.
 
 `npm run verify` runs typecheck, lint, unit tests, production build, and deterministic e2e tests.
@@ -89,6 +92,19 @@ npm run hooks:install
 `npm run audit:prod` runs a production dependency audit. It requires npm registry network access.
 
 An optional live provider smoke test runs only when `EODHD_API_KEY` is present.
+
+## Deployment
+
+Deploy QuantDCA as the Node production server, not as a static-only Vite site. The server owns both the `/api` routes and the built frontend.
+
+For Railway-style hosts, use:
+
+```bash
+npm run build
+npm start
+```
+
+The production server listens on `PORT` when the platform provides it, then falls back to `QDCA_API_PORT`, then `8787` for local production previews. Keep `EODHD_API_KEY` configured server-side only.
 
 ## Pre-Push Hooks
 

@@ -63,6 +63,23 @@ test("error state renders for invalid input", async ({ page }) => {
   await expect(page.getByRole("alert")).toHaveText("Select at least one asset.");
 });
 
+test("asset search explains when the API route returns the web app HTML", async ({ page }) => {
+  await page.route("**/api/assets/search**", async (route) => {
+    await route.fulfill({
+      body: "<!doctype html><html><body>QuantDCA</body></html>",
+      contentType: "text/html",
+      status: 200
+    });
+  });
+
+  await page.goto("/app");
+  await page.getByRole("textbox", { name: "Asset Search", exact: true }).fill("AAPL");
+
+  await expect(page.getByRole("alert")).toHaveText(
+    "Asset search could not reach the QuantDCA API. The /api route returned HTML instead of JSON, so the backend is not being served for this environment."
+  );
+});
+
 test("mobile viewport remains usable", async ({ page }) => {
   await page.goto("/app");
   await selectApple(page);

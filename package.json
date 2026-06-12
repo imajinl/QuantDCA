@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:e2e": "node scripts/dev.mjs --mock-data",
+    "start": "node dist-server/server/index.js",
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json --noEmit && vite build && tsc -p tsconfig.server.json",
     "preview": "npm run build && node dist-server/server/index.js",
     "test": "vitest run --config vitest.config.ts",

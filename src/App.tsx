@@ -108,6 +108,31 @@ export function App() {
   return <DashboardApp />;
 }
 
+async function readApiJson<T>(response: Response, context: string): Promise<T> {
+  const text = await response.text();
+  const trimmed = text.trimStart();
+
+  if (!trimmed) {
+    return {} as T;
+  }
+
+  if (trimmed.startsWith("<")) {
+    throw new Error(
+      `${context} could not reach the QuantDCA API. The /api route returned HTML instead of JSON, so the backend is not being served for this environment.`
+    );
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`${context} returned invalid JSON. Check that /api routes are served by the QuantDCA backend.`);
+  }
+}
+
+function apiErrorMessage(body: { error?: ApiError }, fallback: string): string {
+  return body.error?.message ?? fallback;
+}
+
 function DashboardApp() {
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<MarketAsset[]>([]);
@@ -136,9 +161,9 @@ function DashboardApp() {
         const response = await fetch(`/api/assets/search?q=${encodeURIComponent(query)}`, {
           signal: controller.signal
         });
-        const body = await response.json();
+        const body = await readApiJson<{ assets?: MarketAsset[]; error?: ApiError }>(response, "Asset search");
         if (!response.ok) {
-          throw new Error(body.error?.message ?? "Asset search failed.");
+          throw new Error(apiErrorMessage(body, "Asset search failed."));
         }
         setSearchResults(body.assets ?? []);
         setSearchStatus("idle");
@@ -279,9 +304,12 @@ function DashboardApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ assets: selectedAssets, strategies, normalizeCapital })
       });
-      const body = await response.json();
+      const body = await readApiJson<{ results?: ApiBacktestResult[]; generatedAt?: string; error?: ApiError }>(
+        response,
+        "Backtest"
+      );
       if (!response.ok) {
-        throw new Error((body.error as ApiError | undefined)?.message ?? "Backtest failed.");
+        throw new Error(apiErrorMessage(body, "Backtest failed."));
       }
 
       const nextResults = (body.results ?? []) as ApiBacktestResult[];
