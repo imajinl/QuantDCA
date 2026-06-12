@@ -5,3 +5,4 @@
 - Whenever a new Git worktree is created for this project, run `npm run hooks:install` inside that worktree so its active `pre-push` hook symlinks to the checked-in hook script.
 - Keep the primary product CTA consistent as "Run Backtests"; do not add a public changelog route or nav item unless explicitly requested.
 - Frontend API calls must guard against HTML / non-JSON responses and show a specific backend-routing message instead of raw parser errors like `Unexpected token '<'`.
+- When using `font-synthesis: none`, loaded web-font weight ranges must cover every declared CSS `font-weight`; prefer Google Fonts variable range syntax when dashboard typography uses nonstandard weights.
