@@ -8,7 +8,7 @@ import { loadServerEnv } from "./env";
 loadServerEnv();
 
 const port = Number(process.env.PORT ?? process.env.QDCA_API_PORT ?? 8787);
-const host = process.env.HOST ?? "0.0.0.0";
+const host = process.env.HOST ?? "127.0.0.1";
 const distPath = resolve(process.cwd(), "dist");
 const handleApiRequest = createApiHandler();
 

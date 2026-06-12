@@ -83,7 +83,7 @@ npm run hooks:install
 
 `npm run dev` starts the API service on `127.0.0.1:8787` and the Vite app on `127.0.0.1:5173`.
 
-`npm start` runs the built production server from `dist-server/server/index.js`. Use it after `npm run build`.
+`npm start` runs the built production server from `dist-server/server/index.js`. Use it after `npm run build`. By default it binds to `127.0.0.1`; set `HOST=0.0.0.0` only in deployment environments that require public interface binding.
 
 `npm run test:e2e` starts the same app with `QDCA_USE_MOCK_DATA=true`, so Playwright remains deterministic and does not consume EODHD quota.
 
@@ -105,6 +105,16 @@ npm start
 ```
 
 The production server listens on `PORT` when the platform provides it, then falls back to `QDCA_API_PORT`, then `8787` for local production previews. Keep `EODHD_API_KEY` configured server-side only.
+
+Set these Railway variables:
+
+```bash
+HOST=0.0.0.0
+EODHD_API_KEY=your_key_here
+NODE_ENV=production
+```
+
+Do not set `PORT`; Railway provides it. Local production previews remain localhost-only unless you explicitly set `HOST`.
 
 ## Pre-Push Hooks
 
