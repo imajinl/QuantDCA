@@ -13,9 +13,10 @@
     "test:e2e": "playwright test",
     "verify": "npm run typecheck && npm run lint && npm run test && npm run build && npm run test:e2e",
     "prepush": "node scripts/pre-push.mjs",
-    "prepush:quick": "node scripts/pre-push.mjs --quick",
+    "prepush:full": "node scripts/pre-push.mjs --full",
+    "prepush:quick": "node scripts/pre-push.mjs",
     "audit:prod": "npm audit --omit=dev",
-    "hooks:install": "git config core.hooksPath .githooks",
+    "hooks:install": "node scripts/install-git-hooks.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint ."
   },

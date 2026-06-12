@@ -47,6 +47,7 @@ npm run test:e2e
 npm run build
 npm run verify
 npm run audit:prod
+npm run hooks:install
 ```
 
 `npm run dev` starts the API service on `127.0.0.1:8787` and the Vite app on `127.0.0.1:5173`.
@@ -61,36 +62,61 @@ An optional live provider smoke test runs only when `EODHD_API_KEY` is present.
 
 ## Pre-Push Hooks
 
-Install the repository hook path once per clone:
+Install the active pre-push hook in each clone and each new Git worktree:
 
 ```bash
 npm run hooks:install
 ```
 
-After that, `git push` runs:
+The installer resolves the active hooks directory with:
+
+```bash
+git rev-parse --git-path hooks
+```
+
+Then it symlinks that worktree's active `pre-push` hook to the checked-in script at `scripts/git-hooks/pre-push`.
+
+After that, `git push` runs the fast local gates:
 
 - `npm run typecheck`
 - `npm run lint`
 - `npm run test`
+
+To include heavier local safeguards before pushing, run:
+
+```bash
+PRE_PUSH_FULL=1 git push
+```
+
+`PRE_PUSH_FULL=1` adds:
+
 - `npm run build`
 - `npm run test:e2e`
 
-For a faster local iteration push, run:
+You can also opt into individual heavier checks:
 
 ```bash
-PRE_PUSH_QUICK=1 git push
+PRE_PUSH_BUILD=1 git push
+PRE_PUSH_E2E=1 git push
+PRE_PUSH_AUDIT=1 git push
 ```
 
-For an additional local production dependency audit before pushing, run:
+For a lint-only / typecheck-only emergency path, run:
 
 ```bash
-PRE_PUSH_AUDIT=1 git push
+PRE_PUSH_SKIP_TESTS=1 git push
 ```
 
 To bypass the hook intentionally:
 
 ```bash
 SKIP_PRE_PUSH=1 git push
+```
+
+If a worktree already has a custom `pre-push` hook and you want QuantDCA to replace it:
+
+```bash
+npm run hooks:install -- --force
 ```
 
 Use bypasses sparingly; CI still runs the full quality and e2e checks.
