@@ -2,9 +2,11 @@ import { compareStrategies, type BacktestStrategy, type PricePoint } from "../li
 import { isIsoDate } from "../lib/date";
 import { z } from "zod";
 import { MarketDataError, isMarketDataError } from "./errors";
+import { CoinApiProvider } from "./providers/coinapi";
 import { EodhdProvider } from "./providers/eodhd";
 import { FixtureMarketDataProvider } from "./providers/fixture";
-import type { MarketAsset, MarketDataProvider } from "./providers/types";
+import { RoutedMarketDataProvider } from "./providers/routed";
+import type { AssetDataProviderLabel, HistoricalPriceRequest, MarketAsset, MarketDataProvider } from "./providers/types";
 
 export interface ApiDependencies {
   provider?: MarketDataProvider;
@@ -36,7 +38,18 @@ const assetSchema = z.object({
   name: z.string().trim().min(1, "Asset name is required.").max(180, "Asset name is too long."),
   exchange: z.string().max(40).optional(),
   type: z.string().max(80).optional(),
-  currency: z.string().max(20).optional()
+  currency: z.string().max(20).optional(),
+  assetClass: z.enum(["stock", "crypto", "custom"]).optional(),
+  dataProvider: z.enum(["EODHD", "Coin API", "Custom CSV"]).optional(),
+  provider: z
+    .object({
+      id: z.enum(["eodhd", "coinapi"]),
+      label: z.enum(["EODHD", "Coin API"]),
+      assetClass: z.enum(["stock", "crypto"]),
+      symbol: z.string().trim().min(1, "Provider symbol is required.").max(80, "Provider symbol is too long."),
+      quote: z.string().trim().min(1).max(20).optional()
+    })
+    .optional()
 });
 
 const pricePointSchema = z.object({
@@ -51,10 +64,56 @@ const backtestAssetSchema = assetSchema
     prices: z.array(pricePointSchema).max(MAX_CUSTOM_PRICE_ROWS, "Custom CSV uploads are limited to 20,000 price rows.").optional()
   })
   .superRefine((asset, context) => {
-    if (asset.source === "custom-csv" && (!asset.prices || asset.prices.length === 0)) {
+    if (asset.source === "custom-csv") {
+      if (!asset.prices || asset.prices.length === 0) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Custom CSV assets must include at least one parsed price row."
+        });
+      }
+      return;
+    }
+
+    if (!asset.provider) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Custom CSV assets must include at least one parsed price row."
+        message: "Provider-backed assets must include provider metadata."
+      });
+      return;
+    }
+
+    if (!asset.dataProvider) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provider-backed assets must include a data provider label."
+      });
+    }
+
+    if (asset.dataProvider && asset.dataProvider !== asset.provider.label) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Asset data provider must match provider metadata."
+      });
+    }
+
+    if (asset.assetClass && asset.assetClass !== asset.provider.assetClass) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Asset class must match provider metadata."
+      });
+    }
+
+    if (asset.provider.id === "eodhd" && (asset.provider.assetClass !== "stock" || asset.provider.label !== "EODHD")) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "EODHD assets must be routed as stock assets."
+      });
+    }
+
+    if (asset.provider.id === "coinapi" && (asset.provider.assetClass !== "crypto" || asset.provider.label !== "Coin API")) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Coin API assets must be routed as crypto assets."
       });
     }
   });
@@ -125,7 +184,10 @@ export function createApiHandler(dependencies: ApiDependencies = {}) {
                 : await getProviderHistoricalPrices(provider, {
                     symbol: asset.symbol,
                     from: dateRange.startDate,
-                    to: dateRange.endDate
+                    to: dateRange.endDate,
+                    provider: asset.provider,
+                    assetClass: asset.assetClass,
+                    dataProvider: asset.dataProvider
                   });
             const resultAsset = toPublicAsset(asset);
             const comparison = compareStrategies(prices, body.strategies, {
@@ -135,11 +197,11 @@ export function createApiHandler(dependencies: ApiDependencies = {}) {
               results.push({
                 ...result,
                 asset: resultAsset,
-                runId: `${resultAsset.symbol}:${result.strategyId}`
+                runId: `${assetRunKey(resultAsset)}:${result.strategyId}`
               });
             }
           } catch (error) {
-            errors.push(normalizeError(error, asset.symbol));
+            errors.push(normalizeError(error, asset));
           }
         }
 
@@ -171,8 +233,10 @@ async function parseJsonRequest(request: Request): Promise<unknown> {
 }
 
 function toPublicAsset(asset: BacktestAsset): MarketAsset {
-  const { symbol, code, name, exchange, type, currency } = asset;
-  return { symbol, code, name, exchange, type, currency };
+  const { symbol, code, name, exchange, type, currency, provider } = asset;
+  const dataProvider = asset.source === "custom-csv" ? "Custom CSV" : asset.dataProvider;
+  const assetClass = asset.source === "custom-csv" ? "custom" : asset.assetClass;
+  return { symbol, code, name, exchange, type, currency, assetClass, dataProvider, provider };
 }
 
 export function createProviderFromEnvironment(): MarketDataProvider {
@@ -180,8 +244,13 @@ export function createProviderFromEnvironment(): MarketDataProvider {
     return new FixtureMarketDataProvider();
   }
 
-  return new EodhdProvider({
-    apiKey: process.env.EODHD_API_KEY
+  return new RoutedMarketDataProvider({
+    stockProvider: new EodhdProvider({
+      apiKey: process.env.EODHD_API_KEY
+    }),
+    cryptoProvider: new CoinApiProvider({
+      apiKey: process.env.COINAPI_API_KEY
+    })
   });
 }
 
@@ -195,7 +264,7 @@ async function getProviderSearchResults(provider: MarketDataProvider, query: str
 
 async function getProviderHistoricalPrices(
   provider: MarketDataProvider,
-  request: { symbol: string; from: string; to: string }
+  request: HistoricalPriceRequest
 ): Promise<PricePoint[]> {
   try {
     return await provider.getHistoricalPrices(request);
@@ -231,16 +300,27 @@ function getBacktestDateRange(strategies: BacktestStrategy[]): { startDate: stri
   );
 }
 
-function normalizeError(error: unknown, symbol?: string): { code: string; message: string; status: number; symbol?: string } {
+function assetRunKey(asset: MarketAsset): string {
+  const providerId = asset.provider?.id ?? (asset.dataProvider === "Custom CSV" ? "custom-csv" : "provider");
+  return `${providerId}:${asset.symbol}`;
+}
+
+function normalizeError(
+  error: unknown,
+  asset?: Pick<BacktestAsset, "symbol" | "dataProvider" | "source">
+): { code: string; message: string; status: number; symbol?: string; dataProvider?: AssetDataProviderLabel } {
+  const symbol = asset?.symbol;
+  const dataProvider = asset?.source === "custom-csv" ? "Custom CSV" : asset?.dataProvider;
+
   if (isMarketDataError(error)) {
-    return { code: error.code, message: error.message, status: error.status, symbol };
+    return { code: error.code, message: error.message, status: error.status, symbol, dataProvider };
   }
 
   if (error instanceof Error) {
-    return { code: "bad_request", message: error.message, status: 400, symbol };
+    return { code: "bad_request", message: error.message, status: 400, symbol, dataProvider };
   }
 
-  return { code: "upstream_error", message: "Unexpected server error.", status: 500, symbol };
+  return { code: "upstream_error", message: "Unexpected server error.", status: 500, symbol, dataProvider };
 }
 
 function jsonResponse(payload: unknown, status = 200): Response {

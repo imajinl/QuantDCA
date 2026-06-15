@@ -208,7 +208,15 @@ function normalizeSearchItem(item: unknown): MarketAsset | null {
     name,
     exchange,
     type: raw.Type ?? raw.type,
-    currency: raw.Currency ?? raw.currency
+    currency: raw.Currency ?? raw.currency,
+    assetClass: "stock",
+    dataProvider: "EODHD",
+    provider: {
+      id: "eodhd",
+      label: "EODHD",
+      assetClass: "stock",
+      symbol: code.includes(".") || !exchange ? code : `${code}.${exchange}`
+    }
   };
 }
 

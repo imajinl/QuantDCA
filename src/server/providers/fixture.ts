@@ -4,9 +4,39 @@ import { MarketDataError } from "../errors";
 import type { HistoricalPriceRequest, MarketAsset, MarketDataProvider } from "./types";
 
 const assets: MarketAsset[] = [
-  { symbol: "AAPL.US", code: "AAPL", name: "Apple Inc.", exchange: "US", type: "Common Stock", currency: "USD" },
-  { symbol: "MSFT.US", code: "MSFT", name: "Microsoft Corporation", exchange: "US", type: "Common Stock", currency: "USD" },
-  { symbol: "BTC-USD.CC", code: "BTC-USD", name: "Bitcoin USD", exchange: "CC", type: "Crypto", currency: "USD" }
+  {
+    symbol: "AAPL.US",
+    code: "AAPL",
+    name: "Apple Inc.",
+    exchange: "US",
+    type: "Common Stock",
+    currency: "USD",
+    assetClass: "stock",
+    dataProvider: "EODHD",
+    provider: { id: "eodhd", label: "EODHD", assetClass: "stock", symbol: "AAPL.US" }
+  },
+  {
+    symbol: "MSFT.US",
+    code: "MSFT",
+    name: "Microsoft Corporation",
+    exchange: "US",
+    type: "Common Stock",
+    currency: "USD",
+    assetClass: "stock",
+    dataProvider: "EODHD",
+    provider: { id: "eodhd", label: "EODHD", assetClass: "stock", symbol: "MSFT.US" }
+  },
+  {
+    symbol: "BTC",
+    code: "BTC",
+    name: "Bitcoin",
+    exchange: "Crypto",
+    type: "Crypto",
+    currency: "USD",
+    assetClass: "crypto",
+    dataProvider: "Coin API",
+    provider: { id: "coinapi", label: "Coin API", assetClass: "crypto", symbol: "BTC", quote: "USD" }
+  }
 ];
 
 export class FixtureMarketDataProvider implements MarketDataProvider {
@@ -31,7 +61,7 @@ export class FixtureMarketDataProvider implements MarketDataProvider {
     const series: PricePoint[] = [];
     let cursor = start;
     let index = 0;
-    const crypto = asset.type === "Crypto";
+    const crypto = asset.assetClass === "crypto";
     const base = asset.symbol.startsWith("AAPL") ? 132 : asset.symbol.startsWith("MSFT") ? 240 : 32_000;
     const drift = asset.symbol.startsWith("BTC") ? 18 : asset.symbol.startsWith("MSFT") ? 0.18 : 0.12;
 

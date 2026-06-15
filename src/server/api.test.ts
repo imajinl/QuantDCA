@@ -1,8 +1,30 @@
 import { createApiHandler } from "./api";
 import { MarketDataError } from "./errors";
+import { RoutedMarketDataProvider } from "./providers/routed";
 import type { MarketDataProvider } from "./providers/types";
 
-const asset = { symbol: "AAPL.US", code: "AAPL", name: "Apple Inc.", exchange: "US", type: "Common Stock" };
+const asset = {
+  symbol: "AAPL.US",
+  code: "AAPL",
+  name: "Apple Inc.",
+  exchange: "US",
+  type: "Common Stock",
+  currency: "USD",
+  assetClass: "stock" as const,
+  dataProvider: "EODHD" as const,
+  provider: { id: "eodhd" as const, label: "EODHD" as const, assetClass: "stock" as const, symbol: "AAPL.US" }
+};
+const cryptoAsset = {
+  symbol: "BTC",
+  code: "BTC",
+  name: "Bitcoin",
+  exchange: "Crypto",
+  type: "Crypto",
+  currency: "USD",
+  assetClass: "crypto" as const,
+  dataProvider: "Coin API" as const,
+  provider: { id: "coinapi" as const, label: "Coin API" as const, assetClass: "crypto" as const, symbol: "BTC", quote: "USD" }
+};
 const strategy = {
   id: "monthly-dca",
   name: "Monthly DCA",
@@ -55,16 +77,74 @@ describe("API handler", () => {
 
     expect(response.status).toBe(200);
     expect(body.results).toHaveLength(1);
-    expect(body.results[0].asset.symbol).toBe("AAPL.US");
+    expect(body.results[0].asset).toMatchObject({ symbol: "AAPL.US", dataProvider: "EODHD", provider: asset.provider });
+    expect(body.results[0].runId).toBe("eodhd:AAPL.US:monthly-dca");
     expect(body.results[0].metrics.numberOfPurchases).toBe(5);
   });
 
+  it("routes stocks to EODHD and crypto to Coin API for backtests", async () => {
+    const stockProvider: MarketDataProvider = {
+      searchAssets: vi.fn(async () => [asset]),
+      getHistoricalPrices: vi.fn(async () => priceFixture(10))
+    };
+    const cryptoProvider: MarketDataProvider = {
+      searchAssets: vi.fn(async () => [cryptoAsset]),
+      getHistoricalPrices: vi.fn(async () => priceFixture(30_000))
+    };
+    const handler = createApiHandler({ provider: new RoutedMarketDataProvider({ stockProvider, cryptoProvider }) });
+
+    const response = await handler(
+      request("/api/backtests", {
+        method: "POST",
+        body: JSON.stringify({ assets: [asset, cryptoAsset], strategies: [strategy], normalizeCapital: true })
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(stockProvider.getHistoricalPrices).toHaveBeenCalledWith(expect.objectContaining({ symbol: "AAPL.US", provider: asset.provider }));
+    expect(cryptoProvider.getHistoricalPrices).toHaveBeenCalledWith(expect.objectContaining({ symbol: "BTC", provider: cryptoAsset.provider }));
+    expect(body.results.map((result: { asset: { dataProvider: string } }) => result.asset.dataProvider)).toEqual(["EODHD", "Coin API"]);
+  });
+
+  it("keeps same-symbol assets distinct by provider-qualified run ids", async () => {
+    const stockSameSymbol = { ...asset, symbol: "ABC", code: "ABC", provider: { ...asset.provider, symbol: "ABC" } };
+    const cryptoSameSymbol = { ...cryptoAsset, symbol: "ABC", code: "ABC", provider: { ...cryptoAsset.provider, symbol: "ABC" } };
+    const stockProvider: MarketDataProvider = {
+      searchAssets: vi.fn(),
+      getHistoricalPrices: vi.fn(async () => priceFixture(10))
+    };
+    const cryptoProvider: MarketDataProvider = {
+      searchAssets: vi.fn(),
+      getHistoricalPrices: vi.fn(async () => priceFixture(20))
+    };
+    const handler = createApiHandler({ provider: new RoutedMarketDataProvider({ stockProvider, cryptoProvider }) });
+
+    const response = await handler(
+      request("/api/backtests", {
+        method: "POST",
+        body: JSON.stringify({ assets: [stockSameSymbol, cryptoSameSymbol], strategies: [strategy] })
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.results.map((result: { runId: string }) => result.runId)).toEqual([
+      "eodhd:ABC:monthly-dca",
+      "coinapi:ABC:monthly-dca"
+    ]);
+  });
+
   it("runs a custom CSV asset without calling the provider for prices", async () => {
-    const provider: MarketDataProvider = {
+    const stockProvider: MarketDataProvider = {
       searchAssets: vi.fn(),
       getHistoricalPrices: vi.fn()
     };
-    const handler = createApiHandler({ provider });
+    const cryptoProvider: MarketDataProvider = {
+      searchAssets: vi.fn(),
+      getHistoricalPrices: vi.fn()
+    };
+    const handler = createApiHandler({ provider: new RoutedMarketDataProvider({ stockProvider, cryptoProvider }) });
     const customAsset = {
       symbol: "CSV-CUSTOM",
       code: "CSV-CUSTOM",
@@ -72,6 +152,8 @@ describe("API handler", () => {
       exchange: "Uploaded",
       type: "Custom CSV",
       currency: "USD",
+      assetClass: "custom",
+      dataProvider: "Custom CSV",
       source: "custom-csv",
       prices: [
         { date: "2024-01-01", close: 10 },
@@ -91,9 +173,10 @@ describe("API handler", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(provider.getHistoricalPrices).not.toHaveBeenCalled();
+    expect(stockProvider.getHistoricalPrices).not.toHaveBeenCalled();
+    expect(cryptoProvider.getHistoricalPrices).not.toHaveBeenCalled();
     expect(body.results).toHaveLength(1);
-    expect(body.results[0].asset).toMatchObject({ symbol: "CSV-CUSTOM", type: "Custom CSV" });
+    expect(body.results[0].asset).toMatchObject({ symbol: "CSV-CUSTOM", type: "Custom CSV", dataProvider: "Custom CSV" });
     expect(body.results[0].asset).not.toHaveProperty("prices");
   });
 
@@ -139,6 +222,30 @@ describe("API handler", () => {
     expect(emptyCustomCsvResponse.status).toBe(400);
     await expect(emptyCustomCsvResponse.json()).resolves.toMatchObject({
       error: { code: "bad_request", message: "Custom CSV assets must include at least one parsed price row." }
+    });
+    expect(provider.getHistoricalPrices).not.toHaveBeenCalled();
+  });
+
+  it("rejects provider-backed assets with inconsistent routing metadata", async () => {
+    const provider: MarketDataProvider = {
+      searchAssets: vi.fn(),
+      getHistoricalPrices: vi.fn()
+    };
+    const handler = createApiHandler({ provider });
+
+    const response = await handler(
+      request("/api/backtests", {
+        method: "POST",
+        body: JSON.stringify({
+          assets: [{ ...asset, provider: { ...asset.provider, label: "Coin API" } }],
+          strategies: [strategy]
+        })
+      })
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "bad_request", message: "Asset data provider must match provider metadata." }
     });
     expect(provider.getHistoricalPrices).not.toHaveBeenCalled();
   });
@@ -226,8 +333,10 @@ describe("API handler", () => {
     const text = await response.text();
 
     expect(text).not.toContain("EODHD_API_KEY");
+    expect(text).not.toContain("COINAPI_API_KEY");
     expect(text).not.toContain("api_token");
     expect(text).not.toContain("eodhd.com");
+    expect(text).not.toContain("rest.coinapi.io");
   });
 
   it("sanitizes unexpected provider errors in search and backtest responses", async () => {
@@ -339,7 +448,7 @@ describe("API handler", () => {
       request("/api/backtests", {
         method: "POST",
         body: JSON.stringify({
-          assets: [asset, { ...asset, symbol: "BAD.US", code: "BAD", name: "Bad Data" }],
+          assets: [asset, { ...asset, symbol: "BAD.US", code: "BAD", name: "Bad Data", provider: { ...asset.provider, symbol: "BAD.US" } }],
           strategies: [strategy]
         })
       })
@@ -349,7 +458,17 @@ describe("API handler", () => {
     expect(response.status).toBe(200);
     expect(body.results).toHaveLength(1);
     expect(body.errors).toEqual([
-      { code: "no_data", message: "No historical data found for BAD.US.", status: 422, symbol: "BAD.US" }
+      { code: "no_data", message: "No historical data found for BAD.US.", status: 422, symbol: "BAD.US", dataProvider: "EODHD" }
     ]);
   });
 });
+
+function priceFixture(close: number) {
+  return [
+    { date: "2024-01-01", close },
+    { date: "2024-01-02", close },
+    { date: "2024-01-03", close },
+    { date: "2024-01-04", close },
+    { date: "2024-01-05", close }
+  ];
+}

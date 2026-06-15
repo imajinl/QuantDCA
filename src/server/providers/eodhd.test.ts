@@ -18,7 +18,15 @@ describe("EodhdProvider", () => {
         name: "Apple Inc.",
         exchange: "US",
         type: "Common Stock",
-        currency: "USD"
+        currency: "USD",
+        assetClass: "stock",
+        dataProvider: "EODHD",
+        provider: {
+          id: "eodhd",
+          label: "EODHD",
+          assetClass: "stock",
+          symbol: "AAPL.US"
+        }
       }
     ]);
   });
