@@ -1,24 +1,22 @@
 # QuantDCA
 
-QuantDCA is a free, Ledger-styled financial analytics product for comparing dollar-cost-averaging strategies against lump sum and other contribution schedules. The public website introduces the product, methodology, and brand system; the working dashboard lives at `/app`.
+QuantDCA is a free financial analytics product for comparing dollar-cost-averaging strategies against lump sum and other contribution schedules. The public website is intentionally minimal; the working dashboard lives at `/app` as a clean Inter-based analytics UI.
 
-The product promise is simple: Replay real market history, compare strategies on equal capital, model fees and cash drag, and export every result.
+The product promise is simple: Replay real market history for any supported asset or custom CSV, compare strategies on equal capital, model fees and cash drag, and export every result.
 
 ## Product Surface
 
-The Vite app serves both the public site and the backtesting dashboard:
+The Vite app serves a compact public site and the backtesting dashboard:
 
-- `/`: Ledger landing page — "Would DCA Have Beaten Lump Sum? Find Out Exactly."
-- `/product`: Product overview and workflow.
-- `/methodology`: Data, engine, metrics, and limits.
-- `/about`: Evidence-first manifesto.
-- `/brand`: Ledger brand system and visual tokens.
+- `/`: Public landing page — "DCA or lump sum? Run the receipts."
 - `/app`: Functional backtesting dashboard.
+
+Legacy public marketing paths such as `/product`, `/methodology`, `/about`, and `/brand` are no longer separate pages. The landing page now carries the workflow, methodology, asset-flexible DCA-vs-lump-sum comparison, and trust signals directly.
 
 The dashboard preserves the full v1 workflow:
 
 - EODHD-backed asset search through a server-side API route.
-- Historical daily prices using adjusted close when available.
+- Historical daily prices using adjusted close when every active row supports it, otherwise a consistent close-price basis.
 - Custom CSV uploads with strict parsing feedback.
 - Multi-asset and multi-strategy comparison.
 - DCA, lump sum, and frequency variants.
@@ -29,22 +27,17 @@ The dashboard preserves the full v1 workflow:
 
 ## Brand System
 
-QuantDCA uses the Ledger identity:
+QuantDCA uses one visual system across the public site and the `/app` dashboard: A clean Inter financial-analytics UI with canvas `#F7F8FA`, surface `#FFFFFF`, text `#11161D`, border `#E6E9EE`, accent `#2E63E6`, hover `#1F4FCC`, gain `#0E8A52`, and loss `#C8372F`.
 
-- Warm paper canvas: `#F4F2EB`
-- Near-black green ink: `#15201C`
-- One teal signal: `#0E6F66`
-- Brass only for the second chart series: `#9C6B1B`
-- Graphite dashed invested-capital line: `#A6A89A`
-- Source Serif 4 for headlines and large metrics.
-- Archivo for body text and controls.
-- Spline Sans Mono for labels, tickers, parameters, and tabular figures.
+Charts use `#2E63E6`, `#0E9D94`, `#C2790B`, `#7B5CF0`, `#D14D6B`, and `#5B6675`; the invested-capital reference line is dashed `#A2ABB8`. Figures, labels, axes, controls, and tables use Inter with tabular numerals.
 
-The logo is the averaging staircase mark: periodic equal buys stepping upward, with a teal dot at the crossing. The favicon is served from `public/assets/favicon.svg`.
+The logo is the blue averaging staircase mark: Periodic equal buys stepping upward in white on the accent-blue field. The favicon is served from `public/assets/favicon.svg`.
 
 There is no pricing page, account requirement, upgrade copy, trial copy, or upsell language. The product is completely free for the time being.
 
 ## Setup
+
+Use Node 22.13 or newer, up to the current Node 24 line. CI uses Node 22, while the local v1 audit also verified Node 24.2.0. The repo includes `.nvmrc` and `.node-version` to select Node 22 by default, with `package.json` engine metadata enforcing the supported range.
 
 Install dependencies:
 
@@ -66,6 +59,8 @@ EODHD_API_KEY=your_key_here
 
 The frontend never receives the API key. Asset search and historical prices are requested through the local backend under `/api`.
 
+Optional local and deployment overrides are documented in `.env.example`: `QDCA_API_PORT`, `QDCA_WEB_PORT`, `QDCA_MAX_REQUEST_BYTES`, `HOST`, `PORT`, `QDCA_USE_MOCK_DATA`, and `QDCA_RUN_LIVE_TESTS`. Server ports must be valid TCP ports from `1` through `65535`; request byte limits must be positive integers.
+
 ## Commands
 
 ```bash
@@ -81,17 +76,19 @@ npm run audit:prod
 npm run hooks:install
 ```
 
-`npm run dev` starts the API service on `127.0.0.1:8787` and the Vite app on `127.0.0.1:5173`.
+`npm run dev` starts the API service on `127.0.0.1:8787` and the Vite app on `127.0.0.1:5173` by default. If the default API port is busy and `QDCA_API_PORT` is not explicitly set, the dev runner uses the next open localhost port and proxies Vite to it.
 
 `npm start` runs the built production server from `dist-server/server/index.js`. Use it after `npm run build`. By default it binds to `127.0.0.1`; set `HOST=0.0.0.0` only in deployment environments that require public interface binding.
 
-`npm run test:e2e` starts the same app with `QDCA_USE_MOCK_DATA=true`, so Playwright remains deterministic and does not consume EODHD quota.
+`npm run test:e2e` starts an isolated mock-data app on `127.0.0.1:5174` with its API on `127.0.0.1:8788` by default. Set `QDCA_WEB_PORT` / `QDCA_API_PORT` to run the browser tests on alternate ports. Playwright does not reuse an existing dev server, so browser tests remain deterministic and do not consume EODHD quota.
 
 `npm run verify` runs typecheck, lint, unit tests, production build, and deterministic e2e tests.
 
 `npm run audit:prod` runs a production dependency audit. It requires npm registry network access.
 
-An optional live provider smoke test runs only when `EODHD_API_KEY` is present.
+The live provider smoke test runs only when both `EODHD_API_KEY` and `QDCA_RUN_LIVE_TESTS=1` are present.
+
+`npm audit --omit=dev` is the underlying production dependency audit used by `npm run audit:prod`.
 
 ## Deployment
 
@@ -195,20 +192,25 @@ Next steps for GitHub:
 
 ## Architecture
 
-- `src/MarketingSite.tsx`: Public Ledger website pages and shared brand mark.
-- `src/Marketing.css`: Ledger website visual system.
+- `src/MarketingSite.tsx`: Minimal public landing page and shared brand mark.
+- `src/Marketing.css`: Public Inter clean website visual system.
 - `src/App.tsx`: Route switch plus functional dashboard UI at `/app`.
-- `src/App.css`: Ledger-styled dashboard visual system.
+- `src/App.css`: Inter financial-dashboard visual system.
 - `src/lib/backtest.ts`: Pure backtest engine and metrics.
 - `src/lib/customCsv.ts`: Strict custom CSV parser.
 - `src/server/providers/eodhd.ts`: EODHD provider with response normalization, validation, caching, and explicit error mapping.
 - `src/server/api.ts`: Request handlers for asset search and backtest execution.
+- `src/server/static.ts`: Production static-file path and content-type helpers.
 - `tests/e2e/dashboard.spec.ts`: Browser coverage for marketing navigation, search, configuration, comparison, charts, exports, CSV upload, errors, and mobile usability.
 
 ## Data Notes
 
-Cash drag is modeled as annualized growth / decay on idle earmarked capital before each available price date. Equalized-capital mode uses the largest planned strategy contribution amount as the comparison budget, then allocates that capital across each strategy's schedule.
+Cash drag is modeled as annualized growth / decay on idle earmarked capital before each available price date, including gaps between the requested strategy start date and the first available market price. If cash drag reduces idle cash below a planned purchase, the executed buy is capped at available cash.
 
-Custom CSV uploads require row 1 titles, column A dates beginning with `YYYY-MM-DD`, and column B positive USD prices. Extra columns are ignored.
+Equalized-capital mode uses the largest planned strategy contribution amount as the comparison budget, then scales each DCA strategy's scheduled contributions proportionally so its initial / recurring timing shape is preserved. Total return and CAGR use target capital as the denominator because final portfolio value includes both invested market value and remaining cash. Total invested remains the gross amount actually deployed into purchases, including fees. Average cost / unit is fee-inclusive.
+
+Provider backtests accept up to 6 assets and 6 strategies per request. Custom CSV uploads are limited to 20,000 price rows and API request bodies are capped at 2 MB by default through `QDCA_MAX_REQUEST_BYTES`.
+
+Custom CSV uploads require row 1 titles, column A valid `YYYY-MM-DD` calendar dates, and column B positive USD prices. Extra columns are ignored.
 
 QuantDCA is for research and education, not investment advice. Past performance is not indicative of future results.

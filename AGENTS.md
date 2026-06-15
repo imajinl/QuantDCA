@@ -7,3 +7,4 @@
 - Frontend API calls must guard against HTML / non-JSON responses and show a specific backend-routing message instead of raw parser errors like `Unexpected token '<'`.
 - When using `font-synthesis: none`, loaded web-font weight ranges must cover every declared CSS `font-weight`; prefer Google Fonts variable range syntax when dashboard typography uses nonstandard weights.
 - Server listen hosts must default to localhost for local safety. Public binding such as `HOST=0.0.0.0` should be an explicit deployment setting, not the fallback default.
+- Marketing copy should describe QuantDCA as asset-flexible: Provider search plus custom CSV. Treat S&P 500 as, at most, an example — never as the product scope.
