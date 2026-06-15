@@ -69,6 +69,7 @@ interface ApiError {
   message: string;
   status: number;
   symbol?: string;
+  dataProvider?: string;
 }
 
 interface ApiBacktestResponse {
@@ -247,7 +248,7 @@ function validateStrategyFields(strategy: BacktestStrategy): StrategyFieldErrors
 function partialFailureMessage(errors: ApiError[]): string {
   const details = errors
     .slice(0, 3)
-    .map((error) => `${error.symbol ?? "Asset"}: ${error.message}`)
+    .map((error) => `${error.symbol ?? "Asset"}${error.dataProvider ? ` (${error.dataProvider})` : ""}: ${error.message}`)
     .join(" ");
   const remaining = errors.length > 3 ? ` ${errors.length - 3} more asset${errors.length - 3 === 1 ? "" : "s"} failed.` : "";
   return `Some assets could not be backtested. ${details}${remaining}`;
@@ -379,16 +380,16 @@ function DashboardApp() {
     setError(null);
     setCsvUploadStatus(null);
     invalidateResults();
-    setSelectedAssets((current) => (current.some((selected) => selected.symbol === asset.symbol) ? current : [...current, { ...asset, source: "provider" }]));
+    setSelectedAssets((current) => (current.some((selected) => assetKey(selected) === assetKey(asset)) ? current : [...current, { ...asset, source: "provider" }]));
     setQuery("");
     setSearchResults([]);
     setSearchError(null);
     setCompletedSearchQuery("");
   }
 
-  function removeAsset(symbol: string) {
+  function removeAsset(key: string) {
     invalidateResults();
-    setSelectedAssets((current) => current.filter((asset) => asset.symbol !== symbol));
+    setSelectedAssets((current) => current.filter((asset) => assetKey(asset) !== key));
   }
 
   async function uploadCustomCsv(file: File | null) {
@@ -405,6 +406,8 @@ function DashboardApp() {
         exchange: "Uploaded",
         type: "Custom CSV",
         currency: "USD",
+        assetClass: "custom",
+        dataProvider: "Custom CSV",
         source: "custom-csv",
         prices: parsed.prices
       };
@@ -525,11 +528,11 @@ function DashboardApp() {
         <div className="topbar-meta" aria-label="Data Safeguards">
           <span className="trust-chip">
             <ShieldCheck size={13} aria-hidden="true" />
-            Server-Side Key
+            Server-Side Keys
           </span>
           <span className="trust-chip">
             <Database size={13} aria-hidden="true" />
-            Adjusted Close
+            Provider-Labeled Data
           </span>
           <span className="trust-chip">
             <CheckCircle2 size={13} aria-hidden="true" />
@@ -592,15 +595,18 @@ function DashboardApp() {
                 {searchResults.length > 0 ? (
                   <ul className="asset-result-list" aria-label="Asset search results">
                     {searchResults.map((asset) => (
-                      <li key={asset.symbol}>
+                      <li key={assetKey(asset)}>
                         <button
-                          aria-label={`${asset.symbol} ${asset.name} ${asset.type ?? asset.exchange ?? "Asset"}`}
+                          aria-label={`${asset.symbol} ${asset.name} ${dataProviderLabel(asset)} ${asset.type ?? asset.exchange ?? "Asset"}`}
                           className="asset-result"
                           type="button"
                           onClick={() => addAsset(asset)}
                         >
                           <span className="ar-main">
-                            <strong className="ar-sym">{asset.symbol}</strong>
+                            <span className="ar-line">
+                              <strong className="ar-sym">{asset.symbol}</strong>
+                              <ProviderBadge asset={asset} />
+                            </span>
                             <small className="ar-name">{asset.name}</small>
                           </span>
                           <span className="ar-type">{asset.type ?? asset.exchange ?? "Asset"}</span>
@@ -614,9 +620,10 @@ function DashboardApp() {
               <div className="chips" aria-label="Selected Assets">
                 {selectedAssets.length === 0 ? <p className="empty-row">No assets selected.</p> : null}
                 {selectedAssets.map((asset) => (
-                  <span className={`chip ${asset.source === "custom-csv" ? "csv" : ""}`} key={asset.symbol}>
-                    {asset.symbol}
-                    <button type="button" aria-label={`Remove ${asset.symbol}`} onClick={() => removeAsset(asset.symbol)}>
+                  <span className={`chip ${asset.source === "custom-csv" ? "csv" : ""}`} key={assetKey(asset)} aria-label={`${asset.symbol} ${dataProviderLabel(asset)}`}>
+                    <span>{asset.symbol}</span>
+                    <span className="chip-provider">{dataProviderLabel(asset)}</span>
+                    <button type="button" aria-label={`Remove ${asset.symbol} ${dataProviderLabel(asset)}`} onClick={() => removeAsset(assetKey(asset))}>
                       <X size={12} aria-hidden="true" />
                     </button>
                   </span>
@@ -731,7 +738,7 @@ function DashboardApp() {
               <h2 className="page-title">Strategy Comparison</h2>
               <p className="page-sub">
                 {results.length > 0
-                  ? `${results.length} run${results.length === 1 ? "" : "s"} · ${normalizeCapital ? "equal-capital comparison" : "as-configured comparison"} · ${selectedRun ? formatPriceSourceLabel(selectedRun.priceSource).toLowerCase() : "price history"}`
+                  ? `${results.length} run${results.length === 1 ? "" : "s"} · ${normalizeCapital ? "equal-capital comparison" : "as-configured comparison"} · ${selectedRun ? `${dataProviderLabel(selectedRun.asset)} ${formatPriceSourceLabel(selectedRun.priceSource).toLowerCase()}` : "price history"}`
                   : "Configure assets and strategies, then run the comparison."}
               </p>
             </div>
@@ -754,7 +761,7 @@ function DashboardApp() {
                 Best Outcome
                 <HelpTip label="Best Outcome" text="The run with the highest final portfolio value across the current comparison set." />
               </span>
-              <strong className="w-name">{bestRun ? `${bestRun.asset.symbol} / ${bestRun.strategyName}` : "Awaiting Run"}</strong>
+              <strong className="w-name">{bestRun ? `${bestRun.asset.symbol} (${dataProviderLabel(bestRun.asset)}) / ${bestRun.strategyName}` : "Awaiting Run"}</strong>
               <p className="w-desc">
                 {bestRun
                   ? `${formatCurrency(bestRun.metrics.finalValue)} final value with ${formatPercent(bestRun.metrics.totalReturn)} total return.`
@@ -792,7 +799,7 @@ function DashboardApp() {
               <MetricCard
                 label="Max Drawdown"
                 value={selectedRun ? formatPercent(selectedRun.metrics.maxDrawdown) : "-"}
-                detail={bestRun ? `Best ${bestRun.asset.symbol}` : "Risk"}
+                detail={bestRun ? `Best ${bestRun.asset.symbol} · ${dataProviderLabel(bestRun.asset)}` : "Risk"}
                 helpText="Largest peak-to-trough portfolio decline during the run."
                 accent={selectedRun ? "negative" : undefined}
                 icon={<Activity size={18} aria-hidden="true" />}
@@ -833,7 +840,7 @@ function DashboardApp() {
                     results={results}
                     selectedRunId={selectedRun?.runId ?? null}
                     valueKey="portfolioValue"
-                    label={(result) => `${result.asset.symbol} ${result.strategyName}`}
+                    label={(result) => `${result.asset.symbol} ${dataProviderLabel(result.asset)} ${result.strategyName}`}
                   />
                 </div>
               </section>
@@ -846,7 +853,7 @@ function DashboardApp() {
                         <h2>Invested vs Value</h2>
                         <p className="ph-sub">Capital deployed against portfolio value</p>
                       </div>
-                      <span className="asset-pill">{selectedRun.asset.symbol}</span>
+                      <span className="asset-pill">{selectedRun.asset.symbol} · {dataProviderLabel(selectedRun.asset)}</span>
                     </div>
                     <div className="panel-body">
                       <DualLineChart result={selectedRun} />
@@ -1186,6 +1193,10 @@ function MetricCard({
   );
 }
 
+function ProviderBadge({ asset }: { asset: MarketAsset }) {
+  return <span className={`provider-badge ${dataProviderClass(asset)}`}>{dataProviderLabel(asset)}</span>;
+}
+
 function RunMetadata({
   selectedRun,
   resultCount,
@@ -1211,6 +1222,10 @@ function RunMetadata({
           Price Basis
           <HelpTip label="Price Basis" text="The historical price field used by the engine. Adjusted close is preferred when available." />
         </span>
+      </div>
+      <div>
+        <strong className="md-value tnum">{selectedRun ? dataProviderLabel(selectedRun.asset) : "-"}</strong>
+        <span className="md-label">Data Provider</span>
       </div>
       <div>
         <strong className="md-value tnum">{lastDataDate ?? "-"}</strong>
@@ -1355,7 +1370,7 @@ function RunPicker({
       <select value={selectedRunId} onChange={(event) => onSelect(event.target.value)}>
         {results.map((result) => (
           <option value={result.runId} key={result.runId}>
-            {result.asset.symbol} / {result.strategyName}
+            {result.asset.symbol} · {dataProviderLabel(result.asset)} / {result.strategyName}
           </option>
         ))}
       </select>
@@ -1541,7 +1556,12 @@ function ResultsTable({
                   }
                 }}
               >
-                <th scope="row">{result.asset.symbol}</th>
+                <th scope="row">
+                  <span className="asset-cell" aria-label={`${result.asset.symbol} ${dataProviderLabel(result.asset)}`}>
+                    <span>{result.asset.symbol}</span>
+                    <ProviderBadge asset={result.asset} />
+                  </span>
+                </th>
                 <td>{result.strategyName}</td>
                 <td>{formatCurrency(result.metrics.totalInvested)}</td>
                 <td>{formatCurrency(result.metrics.finalValue)}</td>
@@ -1604,6 +1624,7 @@ function exportComparisonCsv(results: ApiBacktestResult[]) {
     [
       "Asset",
       "Asset Name",
+      "Data Provider",
       "Strategy",
       "Price Basis",
       "Start Date",
@@ -1626,6 +1647,7 @@ function exportComparisonCsv(results: ApiBacktestResult[]) {
     ...results.map((result) => [
       result.asset.symbol,
       result.asset.name,
+      dataProviderLabel(result.asset),
       result.strategyName,
       formatPriceSourceLabel(result.priceSource),
       result.series[0]?.date,
@@ -1650,10 +1672,11 @@ function exportComparisonCsv(results: ApiBacktestResult[]) {
 
 function exportSeriesCsv(result: ApiBacktestResult) {
   exportCsv(`${exportRunPrefix(result)}-series.csv`, [
-    ["Date", "Asset", "Strategy", "Price", "Invested Capital", "Market Value", "Cash Value", "Portfolio Value", "Units"],
+    ["Date", "Asset", "Data Provider", "Strategy", "Price", "Invested Capital", "Market Value", "Cash Value", "Portfolio Value", "Units"],
     ...result.series.map((point) => [
       point.date,
       result.asset.symbol,
+      dataProviderLabel(result.asset),
       result.strategyName,
       point.price,
       point.investedCapital,
@@ -1667,10 +1690,11 @@ function exportSeriesCsv(result: ApiBacktestResult) {
 
 function exportScheduleCsv(result: ApiBacktestResult) {
   exportCsv(`${exportRunPrefix(result)}-schedule.csv`, [
-    ["Transaction ID", "Asset", "Strategy", "Due Date", "Price Date", "Gross Amount", "Fee", "Net Amount", "Price", "Units"],
+    ["Transaction ID", "Asset", "Data Provider", "Strategy", "Due Date", "Price Date", "Gross Amount", "Fee", "Net Amount", "Price", "Units"],
     ...result.transactions.map((transaction) => [
       transaction.id,
       result.asset.symbol,
+      dataProviderLabel(result.asset),
       result.strategyName,
       transaction.dueDate,
       transaction.date,
@@ -1741,7 +1765,7 @@ function downloadFile(fileName: string, content: string, type: string) {
 }
 
 function exportRunPrefix(result: ApiBacktestResult) {
-  return `quantdca-${result.asset.symbol}-${result.strategyName}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  return `quantdca-${result.asset.symbol}-${dataProviderLabel(result.asset)}-${result.strategyName}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 }
 
 function formatPriceSourceLabel(priceSource: ApiBacktestResult["priceSource"]) {
@@ -1757,6 +1781,22 @@ function formatRunTimestamp(isoTimestamp: string): string {
     minute: "2-digit",
     timeZoneName: "short"
   }).format(new Date(isoTimestamp));
+}
+
+function assetKey(asset: MarketAsset): string {
+  return `${asset.provider?.id ?? asset.dataProvider ?? "asset"}:${asset.symbol}`;
+}
+
+function dataProviderLabel(asset: MarketAsset): string {
+  return asset.dataProvider ?? asset.provider?.label ?? "Provider";
+}
+
+function dataProviderClass(asset: MarketAsset): string {
+  const label = dataProviderLabel(asset).toLowerCase();
+  if (label === "coin api") return "coinapi";
+  if (label === "eodhd") return "eodhd";
+  if (label === "custom csv") return "csv";
+  return "";
 }
 
 function customCsvSymbol(fileName: string, selectedAssets: SelectedAsset[]) {

@@ -17,11 +17,12 @@ test("marketing website links into the working backtester", async ({ page }) => 
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "DCA or lump sum? Run the receipts." })).toBeVisible();
-  await expect(page.getByText("S&P 500 or any supported asset")).toBeVisible();
+  await expect(page.getByText("stocks, crypto, or custom CSV uploads")).toBeVisible();
   await expect(page.getByText("Free — no account needed to run a comparison.").first()).toBeVisible();
   await expect(page.getByText("quantdca.xyz")).toBeVisible();
-  await expect(page.getByText("S&P 500 · Lump Sum").first()).toBeVisible();
-  await expect(page.getByText("Search + CSV")).toBeVisible();
+  await expect(page.getByText("AAPL · EODHD · Lump Sum").first()).toBeVisible();
+  await expect(page.getByText("Stocks / Crypto")).toBeVisible();
+  await expect(page.getByText("Custom CSV").first()).toBeVisible();
   await expect(page.getByText("Step 04")).toBeVisible();
   await expect(page.getByRole("link", { name: "About" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Brand" })).toHaveCount(0);
@@ -53,8 +54,54 @@ test("user can search, select an asset, configure DCA, and compare strategies", 
   await expect(page.getByTestId("portfolio-chart").locator("path")).toHaveCount(2);
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
   await expect(page.getByRole("table", { name: "Purchase Schedule" })).toBeVisible();
-  await expect(page.getByRole("row", { name: /AAPL.US Monthly DCA/i })).toBeVisible();
-  await expect(page.getByRole("row", { name: /AAPL.US Lump Sum/i })).toBeVisible();
+  await expect(page.locator(".run-picker select")).toContainText("AAPL.US · EODHD / Monthly DCA");
+  await expect(page.getByText("Data Provider")).toBeVisible();
+  await expect(page.getByRole("row", { name: /AAPL.US.*EODHD.*Monthly DCA/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /AAPL.US.*EODHD.*Lump Sum/i })).toBeVisible();
+});
+
+test("asset search dropdown distinguishes EODHD and Coin API provider labels", async ({ page }) => {
+  await page.route("**/api/assets/search**", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        assets: [
+          {
+            symbol: "AAPL.US",
+            code: "AAPL",
+            name: "Apple Inc.",
+            exchange: "US",
+            type: "Common Stock",
+            currency: "USD",
+            assetClass: "stock",
+            dataProvider: "EODHD",
+            provider: { id: "eodhd", label: "EODHD", assetClass: "stock", symbol: "AAPL.US" }
+          },
+          {
+            symbol: "BTC",
+            code: "BTC",
+            name: "Bitcoin",
+            exchange: "Crypto",
+            type: "Crypto",
+            currency: "USD",
+            assetClass: "crypto",
+            dataProvider: "Coin API",
+            provider: { id: "coinapi", label: "Coin API", assetClass: "crypto", symbol: "BTC", quote: "USD" }
+          }
+        ]
+      })
+    });
+  });
+
+  await page.goto("/app");
+  await page.getByRole("textbox", { name: "Asset Search", exact: true }).fill("BT");
+
+  await expect(page.getByRole("button", { name: /AAPL.US.*EODHD/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /BTC.*Coin API/i })).toBeVisible();
+
+  await page.getByRole("button", { name: /BTC.*Coin API/i }).click();
+  await expect(page.locator(".chip", { hasText: "BTC" }).getByText("Coin API")).toBeVisible();
 });
 
 test("asset search explains empty result sets", async ({ page }) => {
@@ -71,10 +118,10 @@ test("user can compare two selected assets across two strategies", async ({ page
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
 
   await expect(page.getByTestId("portfolio-chart").locator("path")).toHaveCount(4);
-  await expect(page.getByRole("row", { name: /AAPL.US Monthly DCA/i })).toBeVisible();
-  await expect(page.getByRole("row", { name: /AAPL.US Lump Sum/i })).toBeVisible();
-  await expect(page.getByRole("row", { name: /MSFT.US Monthly DCA/i })).toBeVisible();
-  await expect(page.getByRole("row", { name: /MSFT.US Lump Sum/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /AAPL.US.*EODHD.*Monthly DCA/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /AAPL.US.*EODHD.*Lump Sum/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /MSFT.US.*EODHD.*Monthly DCA/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /MSFT.US.*EODHD.*Lump Sum/i })).toBeVisible();
 });
 
 test("error state renders for invalid input", async ({ page }) => {
@@ -121,7 +168,7 @@ test("keyboard users can choose the focused result row", async ({ page }) => {
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
 
-  const lumpSumRow = page.getByRole("row", { name: /AAPL.US Lump Sum/i });
+  const lumpSumRow = page.getByRole("row", { name: /AAPL.US.*EODHD.*Lump Sum/i });
   await lumpSumRow.focus();
   await page.keyboard.press("Enter");
 
@@ -138,7 +185,7 @@ test("partial asset failures are shown without hiding successful runs", async ({
       body: JSON.stringify({
         generatedAt: "2026-06-15T12:00:00.000Z",
         results: [apiResultFixture()],
-        errors: [{ code: "no_data", message: "No historical data found for MSFT.US.", status: 422, symbol: "MSFT.US" }]
+        errors: [{ code: "no_data", message: "No historical data found for MSFT.US.", status: 422, symbol: "MSFT.US", dataProvider: "EODHD" }]
       })
     });
   });
@@ -150,7 +197,7 @@ test("partial asset failures are shown without hiding successful runs", async ({
 
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
   await expect(page.getByRole("alert")).toHaveText(
-    "Some assets could not be backtested. MSFT.US: No historical data found for MSFT.US."
+    "Some assets could not be backtested. MSFT.US (EODHD): No historical data found for MSFT.US."
   );
 });
 
@@ -217,8 +264,9 @@ test("user can export comparison data as CSV", async ({ page }) => {
   const filePath = await download.path();
   expect(filePath).not.toBeNull();
   const csv = readFileSync(filePath!, "utf8");
-  expect(csv).toContain("Asset,Asset Name,Strategy,Price Basis");
+  expect(csv).toContain("Asset,Asset Name,Data Provider,Strategy,Price Basis");
   expect(csv).toContain("AAPL.US");
+  expect(csv).toContain("EODHD");
   expect(csv).toContain("Adjusted Close");
 });
 
@@ -265,8 +313,8 @@ test("user can upload a custom CSV and run a backtest", async ({ page }, testInf
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
 
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
-  await expect(page.getByRole("row", { name: /CSV-CUSTOM-PRICES Monthly DCA/i })).toBeVisible();
-  await expect(page.getByRole("row", { name: /CSV-CUSTOM-PRICES Lump Sum/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /CSV-CUSTOM-PRICES.*Custom CSV.*Monthly DCA/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /CSV-CUSTOM-PRICES.*Custom CSV.*Lump Sum/i })).toBeVisible();
 });
 
 test("custom CSV upload gives specific parsing feedback", async ({ page }, testInfo) => {
@@ -292,8 +340,18 @@ function customCsvFixture() {
 
 function apiResultFixture() {
   return {
-    runId: "AAPL.US:monthly-dca",
-    asset: { symbol: "AAPL.US", code: "AAPL", name: "Apple Inc.", exchange: "US", type: "Common Stock", currency: "USD" },
+    runId: "eodhd:AAPL.US:monthly-dca",
+    asset: {
+      symbol: "AAPL.US",
+      code: "AAPL",
+      name: "Apple Inc.",
+      exchange: "US",
+      type: "Common Stock",
+      currency: "USD",
+      assetClass: "stock",
+      dataProvider: "EODHD",
+      provider: { id: "eodhd", label: "EODHD", assetClass: "stock", symbol: "AAPL.US" }
+    },
     strategyId: "monthly-dca",
     strategyName: "Monthly DCA",
     targetCapital: 200,
