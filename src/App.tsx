@@ -1,5 +1,7 @@
 import {
   Activity,
+  AlertCircle,
+  AlertTriangle,
   ArrowUpRight,
   BarChart3,
   CalendarDays,
@@ -9,16 +11,21 @@ import {
   Database,
   Download,
   FileJson,
+  Info,
+  Loader2,
   Play,
   Plus,
   Search,
   ShieldCheck,
   Trash2,
+  Upload,
   X
 } from "lucide-react";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { BacktestStrategy, ContributionFrequency, PricePoint, StrategyType, Transaction } from "./lib/backtest";
 import { CustomCsvParseError, parseCustomPriceCsv } from "./lib/customCsv";
+import { isIsoDate } from "./lib/date";
 import { formatCompactCurrency, formatCurrency, formatNumber, formatPercent } from "./lib/format";
 import { LogoMark, MarketingSite } from "./MarketingSite";
 import type { MarketAsset } from "./server/providers/types";
@@ -64,12 +71,29 @@ interface ApiError {
   symbol?: string;
 }
 
+interface ApiBacktestResponse {
+  results?: ApiBacktestResult[];
+  errors?: ApiError[];
+  generatedAt?: string;
+  error?: ApiError;
+}
+
 interface SelectedAsset extends MarketAsset {
   source?: "provider" | "custom-csv";
   prices?: PricePoint[];
 }
 
-const colors = ["#0E6F66", "#9C6B1B", "#7C3AED", "#157A4A", "#B23A2E", "#5C6661"];
+const colors = ["#2E63E6", "#0E9D94", "#C2790B", "#7B5CF0", "#D14D6B", "#5B6675"];
+
+interface StrategyFieldErrors {
+  name?: string;
+  startDate?: string;
+  endDate?: string;
+  initialInvestment?: string;
+  recurringContribution?: string;
+  transactionFee?: string;
+  cashDragPercent?: string;
+}
 
 const defaultStrategies: BacktestStrategy[] = [
   {
@@ -133,7 +157,105 @@ function apiErrorMessage(body: { error?: ApiError }, fallback: string): string {
   return body.error?.message ?? fallback;
 }
 
+function validateStrategiesForRun(strategies: BacktestStrategy[]): string | null {
+  for (const strategy of strategies) {
+    const label = strategy.name.trim() || "Unnamed strategy";
+    if (!strategy.name.trim()) {
+      return "Every strategy needs a name.";
+    }
+    if (!isIsoDate(strategy.startDate) || !isIsoDate(strategy.endDate)) {
+      return `${label}: Use valid YYYY-MM-DD calendar dates.`;
+    }
+    if (strategy.startDate > strategy.endDate) {
+      return `${label}: Start date must be before or equal to end date.`;
+    }
+    if (!Number.isFinite(strategy.initialInvestment) || !Number.isFinite(strategy.recurringContribution)) {
+      return `${label}: Investment amounts must be finite numbers.`;
+    }
+    if (strategy.initialInvestment < 0 || strategy.recurringContribution < 0) {
+      return `${label}: Investment amounts cannot be negative.`;
+    }
+    if (strategy.initialInvestment === 0 && strategy.recurringContribution === 0) {
+      return `${label}: At least one investment amount must be greater than zero.`;
+    }
+    if (!Number.isFinite(strategy.transactionFee)) {
+      return `${label}: Transaction fee must be a finite number.`;
+    }
+    if (strategy.transactionFee < 0) {
+      return `${label}: Transaction fee cannot be negative.`;
+    }
+    if (!Number.isFinite(strategy.cashDragPercent)) {
+      return `${label}: Cash drag must be a finite number.`;
+    }
+    if (strategy.cashDragPercent <= -100) {
+      return `${label}: Cash drag must be greater than -100%.`;
+    }
+  }
+
+  return null;
+}
+
+function validateStrategyFields(strategy: BacktestStrategy): StrategyFieldErrors {
+  const errors: StrategyFieldErrors = {};
+
+  if (!strategy.name.trim()) {
+    errors.name = "Every strategy needs a name.";
+  }
+  if (!isIsoDate(strategy.startDate)) {
+    errors.startDate = "Use a valid YYYY-MM-DD start date.";
+  }
+  if (!isIsoDate(strategy.endDate)) {
+    errors.endDate = "Use a valid YYYY-MM-DD end date.";
+  }
+  if (isIsoDate(strategy.startDate) && isIsoDate(strategy.endDate) && strategy.startDate > strategy.endDate) {
+    errors.startDate = "Start date must be before or equal to end date.";
+    errors.endDate = "End date must be after or equal to start date.";
+  }
+  if (!Number.isFinite(strategy.initialInvestment)) {
+    errors.initialInvestment = "Initial investment must be a finite number.";
+  } else if (strategy.initialInvestment < 0) {
+    errors.initialInvestment = "Initial investment cannot be negative.";
+  }
+  if (!Number.isFinite(strategy.recurringContribution)) {
+    errors.recurringContribution = "Recurring contribution must be a finite number.";
+  } else if (strategy.recurringContribution < 0) {
+    errors.recurringContribution = "Recurring contribution cannot be negative.";
+  }
+  if (
+    Number.isFinite(strategy.initialInvestment) &&
+    Number.isFinite(strategy.recurringContribution) &&
+    strategy.initialInvestment === 0 &&
+    strategy.recurringContribution === 0
+  ) {
+    errors.initialInvestment = "At least one investment amount must be greater than zero.";
+    errors.recurringContribution = "At least one investment amount must be greater than zero.";
+  }
+  if (!Number.isFinite(strategy.transactionFee)) {
+    errors.transactionFee = "Transaction fee must be a finite number.";
+  } else if (strategy.transactionFee < 0) {
+    errors.transactionFee = "Transaction fee cannot be negative.";
+  }
+  if (!Number.isFinite(strategy.cashDragPercent)) {
+    errors.cashDragPercent = "Cash drag must be a finite number.";
+  } else if (strategy.cashDragPercent <= -100) {
+    errors.cashDragPercent = "Cash drag must be greater than -100%.";
+  }
+
+  return errors;
+}
+
+function partialFailureMessage(errors: ApiError[]): string {
+  const details = errors
+    .slice(0, 3)
+    .map((error) => `${error.symbol ?? "Asset"}: ${error.message}`)
+    .join(" ");
+  const remaining = errors.length > 3 ? ` ${errors.length - 3} more asset${errors.length - 3 === 1 ? "" : "s"} failed.` : "";
+  return `Some assets could not be backtested. ${details}${remaining}`;
+}
+
 function DashboardApp() {
+  const assetSearchStatusId = useId();
+  const assetSearchResultsId = useId();
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<MarketAsset[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<SelectedAsset[]>([]);
@@ -141,22 +263,31 @@ function DashboardApp() {
   const [normalizeCapital, setNormalizeCapital] = useState(true);
   const [searchStatus, setSearchStatus] = useState<"idle" | "loading" | "error">("idle");
   const [runStatus, setRunStatus] = useState<"idle" | "loading" | "error" | "success">("idle");
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [completedSearchQuery, setCompletedSearchQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [runWarning, setRunWarning] = useState<string | null>(null);
   const [results, setResults] = useState<ApiBacktestResult[]>([]);
+  const [resultsStale, setResultsStale] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [csvUploadStatus, setCsvUploadStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+  const nextStrategyId = useRef(1);
 
   useEffect(() => {
     if (query.trim().length < 2) {
       setSearchResults([]);
       setSearchStatus("idle");
+      setSearchError(null);
+      setCompletedSearchQuery("");
       return;
     }
 
     const controller = new AbortController();
+    const currentQuery = query.trim();
     const timer = window.setTimeout(async () => {
       setSearchStatus("loading");
+      setSearchError(null);
       try {
         const response = await fetch(`/api/assets/search?q=${encodeURIComponent(query)}`, {
           signal: controller.signal
@@ -166,12 +297,14 @@ function DashboardApp() {
           throw new Error(apiErrorMessage(body, "Asset search failed."));
         }
         setSearchResults(body.assets ?? []);
+        setCompletedSearchQuery(currentQuery);
         setSearchStatus("idle");
       } catch (searchError) {
         if (!controller.signal.aborted) {
           setSearchStatus("error");
           setSearchResults([]);
-          setError(searchError instanceof Error ? searchError.message : "Asset search failed.");
+          setCompletedSearchQuery("");
+          setSearchError(searchError instanceof Error ? searchError.message : "Asset search failed.");
         }
       }
     }, 250);
@@ -207,6 +340,10 @@ function DashboardApp() {
       { startDate: strategies[0].startDate, endDate: strategies[0].endDate }
     );
   }, [strategies]);
+  const strategyErrors = useMemo(
+    () => new Map(strategies.map((strategy) => [strategy.id, validateStrategyFields(strategy)])),
+    [strategies]
+  );
 
   const lastDataDate = selectedRun?.series.at(-1)?.date ?? null;
   const bestAdvantage = bestRun && secondBestRun ? bestRun.metrics.finalValue - secondBestRun.metrics.finalValue : 0;
@@ -215,16 +352,42 @@ function DashboardApp() {
       ? bestAdvantage / secondBestRun.metrics.finalValue
       : 0;
   const totalInvested = useMemo(() => selectedRun?.metrics.totalInvested ?? 0, [selectedRun]);
+  const noSearchResults =
+    query.trim().length >= 2 &&
+    searchStatus === "idle" &&
+    completedSearchQuery === query.trim() &&
+    searchResults.length === 0;
+  const assetSearchStatus =
+    searchStatus === "loading"
+      ? `Searching for ${query.trim()}.`
+      : searchStatus === "error" && searchError
+        ? searchError
+        : noSearchResults
+          ? `No assets found for ${completedSearchQuery}.`
+          : searchResults.length > 0
+            ? `${searchResults.length} asset result${searchResults.length === 1 ? "" : "s"} available.`
+            : "Enter at least two characters to search assets.";
+
+  function invalidateResults() {
+    if (results.length > 0) {
+      setResultsStale(true);
+    }
+    setRunWarning(null);
+  }
 
   function addAsset(asset: MarketAsset) {
     setError(null);
     setCsvUploadStatus(null);
+    invalidateResults();
     setSelectedAssets((current) => (current.some((selected) => selected.symbol === asset.symbol) ? current : [...current, { ...asset, source: "provider" }]));
     setQuery("");
     setSearchResults([]);
+    setSearchError(null);
+    setCompletedSearchQuery("");
   }
 
   function removeAsset(symbol: string) {
+    invalidateResults();
     setSelectedAssets((current) => current.filter((asset) => asset.symbol !== symbol));
   }
 
@@ -246,6 +409,7 @@ function DashboardApp() {
         prices: parsed.prices
       };
 
+      invalidateResults();
       setSelectedAssets((current) => [...current, asset]);
       setCsvUploadStatus({
         tone: "success",
@@ -263,29 +427,38 @@ function DashboardApp() {
   }
 
   function updateStrategy(id: string, patch: Partial<BacktestStrategy>) {
+    invalidateResults();
     setStrategies((current) => current.map((strategy) => (strategy.id === id ? { ...strategy, ...patch } : strategy)));
   }
 
   function addStrategy() {
-    const nextIndex = strategies.length + 1;
-    setStrategies((current) => [
-      ...current,
-      {
-        ...current[0],
-        id: `strategy-${Date.now()}`,
-        name: `DCA ${nextIndex}`,
-        type: "dca",
-        frequency: nextIndex % 2 === 0 ? "weekly" : "monthly"
-      }
-    ]);
+    invalidateResults();
+    setStrategies((current) => {
+      const nextIndex = current.length + 1;
+      const nextId = nextStrategyId.current;
+      nextStrategyId.current += 1;
+
+      return [
+        ...current,
+        {
+          ...current[0],
+          id: `custom-strategy-${nextId}`,
+          name: `DCA ${nextIndex}`,
+          type: "dca",
+          frequency: nextIndex % 2 === 0 ? "weekly" : "monthly"
+        }
+      ];
+    });
   }
 
   function removeStrategy(id: string) {
+    invalidateResults();
     setStrategies((current) => (current.length > 1 ? current.filter((strategy) => strategy.id !== id) : current));
   }
 
   async function runBacktest() {
     setError(null);
+    setRunWarning(null);
     if (selectedAssets.length === 0) {
       setRunStatus("error");
       setError("Select at least one asset.");
@@ -296,6 +469,12 @@ function DashboardApp() {
       setError("Configure at least one strategy.");
       return;
     }
+    const validationMessage = validateStrategiesForRun(strategies);
+    if (validationMessage) {
+      setRunStatus("error");
+      setError(validationMessage);
+      return;
+    }
 
     setRunStatus("loading");
     try {
@@ -304,207 +483,291 @@ function DashboardApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ assets: selectedAssets, strategies, normalizeCapital })
       });
-      const body = await readApiJson<{ results?: ApiBacktestResult[]; generatedAt?: string; error?: ApiError }>(
-        response,
-        "Backtest"
-      );
+      const body = await readApiJson<ApiBacktestResponse>(response, "Backtest");
       if (!response.ok) {
         throw new Error(apiErrorMessage(body, "Backtest failed."));
       }
 
       const nextResults = (body.results ?? []) as ApiBacktestResult[];
+      const nextErrors = body.errors ?? [];
       const defaultFocusedRun = nextResults.reduce<ApiBacktestResult | null>(
         (best, result) => (!best || result.metrics.finalValue > best.metrics.finalValue ? result : best),
         null
       );
 
       setResults(nextResults);
+      setResultsStale(false);
       setSelectedRunId(defaultFocusedRun?.runId ?? null);
       setGeneratedAt(body.generatedAt ?? null);
+      setRunWarning(nextErrors.length > 0 ? partialFailureMessage(nextErrors) : null);
       setRunStatus("success");
     } catch (runError) {
       setRunStatus("error");
       setResults([]);
+      setResultsStale(false);
       setGeneratedAt(null);
+      setRunWarning(null);
       setError(runError instanceof Error ? runError.message : "Backtest failed.");
     }
   }
 
   return (
-    <main className="app-shell">
+    <main className="app">
       <header className="topbar" aria-label="QuantDCA Overview">
-        <div className="brand-lockup">
+        <div className="brand">
           <LogoMark className="brand-mark" />
-          <div>
-            <p className="eyebrow brand-wordmark">Quant<span>DCA</span></p>
-            <h1>Strategy Comparison Console</h1>
-          </div>
+          <span className="brand-name">
+            Quant<b>DCA</b>
+          </span>
+          <span className="brand-sep" />
+          <h1 className="brand-context">Strategy Comparison Console</h1>
         </div>
         <div className="topbar-meta" aria-label="Data Safeguards">
-          <span>
-            <ShieldCheck size={14} aria-hidden="true" />
+          <span className="trust-chip">
+            <ShieldCheck size={13} aria-hidden="true" />
             Server-Side Key
           </span>
-          <span>
-            <Database size={14} aria-hidden="true" />
+          <span className="trust-chip">
+            <Database size={13} aria-hidden="true" />
             Adjusted Close
           </span>
-          <span>
-            <CheckCircle2 size={14} aria-hidden="true" />
+          <span className="trust-chip">
+            <CheckCircle2 size={13} aria-hidden="true" />
             Deterministic Engine
           </span>
         </div>
       </header>
 
       <section className="workspace">
-        <aside className="control-surface" aria-label="Backtest Controls">
-          <div className="panel-kicker">
-            <span>Setup</span>
-            <small>{selectedAssets.length} Asset{selectedAssets.length === 1 ? "" : "s"} / {strategies.length} Strategies</small>
-          </div>
-          <div className="section-heading">
-            <Search size={18} aria-hidden="true" />
-            <h2>Assets</h2>
-          </div>
-          <label className="field">
-            <span className="label-row">Asset Search</span>
-            <input
-              aria-label="Asset Search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="AAPL, MSFT, BTC"
-              autoComplete="off"
-            />
-          </label>
-          <div className="search-results" aria-live="polite">
-            {searchStatus === "loading" ? <p className="muted-row">Searching...</p> : null}
-            {searchStatus === "error" ? <p className="muted-row error-text">Search failed.</p> : null}
-            {searchResults.map((asset) => (
-              <button className="asset-result" key={asset.symbol} type="button" onClick={() => addAsset(asset)}>
-                <span>
-                  <strong>{asset.symbol}</strong>
-                  <small>{asset.name}</small>
+        <aside className="config" aria-label="Backtest Controls">
+          <div className="config-scroll scroll-thin">
+            <section className="section" aria-labelledby="assets-heading">
+              <div className="section-head">
+                <h2 id="assets-heading">
+                  <Search size={15} aria-hidden="true" />
+                  Assets
+                </h2>
+                <span className="section-meta">
+                  {selectedAssets.length} asset{selectedAssets.length === 1 ? "" : "s"} / {strategies.length} strategies
                 </span>
-                <span>{asset.type ?? asset.exchange ?? "Asset"}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="selected-assets" aria-label="Selected Assets">
-            {selectedAssets.length === 0 ? <p className="muted-row">No assets selected.</p> : null}
-            {selectedAssets.map((asset) => (
-              <span className="asset-chip" key={asset.symbol}>
-                {asset.symbol}
-                <button type="button" aria-label={`Remove ${asset.symbol}`} onClick={() => removeAsset(asset.symbol)}>
-                  <X size={13} aria-hidden="true" />
-                </button>
-              </span>
-            ))}
-          </div>
-
-          <div className="csv-upload">
-            <div className="section-heading compact-heading">
-              <Database size={16} aria-hidden="true" />
-              <h2>Custom CSV</h2>
-              <HelpTip
-                label="Custom CSV Upload"
-                text="Upload a CSV where row 1 is ignored, column A starts with YYYY-MM-DD dates, and column B contains positive USD prices."
-              />
-            </div>
-            <label className="file-field">
-              <span className="label-row">Upload Custom CSV</span>
-              <input
-                accept=".csv,text/csv"
-                aria-label="Upload Custom CSV"
-                type="file"
-                onChange={(event) => {
-                  void uploadCustomCsv(event.currentTarget.files?.[0] ?? null);
-                  event.currentTarget.value = "";
-                }}
-              />
-            </label>
-            <p className="csv-format-note">
-              Required: A2 = YYYY-MM-DD date, B2 = USD price. Row 1 and columns C onward are ignored.
-            </p>
-            {csvUploadStatus ? (
-              <p className={`csv-feedback ${csvUploadStatus.tone}`} role={csvUploadStatus.tone === "error" ? "alert" : "status"}>
-                {csvUploadStatus.message}
+              </div>
+              <label className="field">
+                <span className="field-label">Asset Search</span>
+                <span className="search-wrap">
+                  <Search className="s-icon" size={15} aria-hidden="true" />
+                  <input
+                    aria-label="Asset Search"
+                    aria-controls={assetSearchResultsId}
+                    aria-describedby={assetSearchStatusId}
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="AAPL, MSFT, BTC"
+                    autoComplete="off"
+                    type="text"
+                  />
+                </span>
+              </label>
+              <p className="sr-only" id={assetSearchStatusId} role="status">
+                {assetSearchStatus}
               </p>
-            ) : null}
+              <div className="search-results" id={assetSearchResultsId} aria-live="polite">
+                {searchStatus === "loading" ? (
+                  <p className="search-status">
+                    <Loader2 className="inline-spinner" size={14} aria-hidden="true" />
+                    Searching…
+                  </p>
+                ) : null}
+                {searchStatus === "error" && searchError ? (
+                  <p className="search-status error" role="alert">
+                    <AlertCircle size={14} aria-hidden="true" />
+                    {searchError}
+                  </p>
+                ) : null}
+                {noSearchResults ? (
+                  <p className="search-status">
+                    <Info size={14} aria-hidden="true" />
+                    No assets found for "{completedSearchQuery}".
+                  </p>
+                ) : null}
+                {searchResults.length > 0 ? (
+                  <ul className="asset-result-list" aria-label="Asset search results">
+                    {searchResults.map((asset) => (
+                      <li key={asset.symbol}>
+                        <button
+                          aria-label={`${asset.symbol} ${asset.name} ${asset.type ?? asset.exchange ?? "Asset"}`}
+                          className="asset-result"
+                          type="button"
+                          onClick={() => addAsset(asset)}
+                        >
+                          <span className="ar-main">
+                            <strong className="ar-sym">{asset.symbol}</strong>
+                            <small className="ar-name">{asset.name}</small>
+                          </span>
+                          <span className="ar-type">{asset.type ?? asset.exchange ?? "Asset"}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+
+              <div className="chips" aria-label="Selected Assets">
+                {selectedAssets.length === 0 ? <p className="empty-row">No assets selected.</p> : null}
+                {selectedAssets.map((asset) => (
+                  <span className={`chip ${asset.source === "custom-csv" ? "csv" : ""}`} key={asset.symbol}>
+                    {asset.symbol}
+                    <button type="button" aria-label={`Remove ${asset.symbol}`} onClick={() => removeAsset(asset.symbol)}>
+                      <X size={12} aria-hidden="true" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </section>
+
+            <div className="section-divider" />
+
+            <section className="section" aria-labelledby="csv-heading">
+              <div className="section-head">
+                <h2 id="csv-heading">
+                  <Database size={15} aria-hidden="true" />
+                  Custom CSV
+                  <HelpTip
+                    label="Custom CSV Upload"
+                    text="Upload a CSV where row 1 is ignored, column A starts with YYYY-MM-DD dates, and column B contains positive USD prices."
+                  />
+                </h2>
+              </div>
+              <label className="file-drop">
+                <Upload size={16} aria-hidden="true" />
+                <span>
+                  <span className="fd-main">Upload price CSV</span>
+                  <span className="fd-sub">A2 = YYYY-MM-DD date, B2 = USD price</span>
+                </span>
+                <input
+                  accept=".csv,text/csv"
+                  aria-label="Upload Custom CSV"
+                  type="file"
+                  onChange={(event) => {
+                    void uploadCustomCsv(event.currentTarget.files?.[0] ?? null);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+              <p className="field-hint">Row 1 and columns C onward are ignored.</p>
+              {csvUploadStatus ? (
+                <StatusAlert tone={csvUploadStatus.tone} message={csvUploadStatus.message} role={csvUploadStatus.tone === "error" ? "alert" : "status"} />
+              ) : null}
+            </section>
+
+            <div className="section-divider" />
+
+            <section className="section" aria-labelledby="strategies-heading">
+              <div className="section-head">
+                <h2 id="strategies-heading">
+                  <CalendarDays size={15} aria-hidden="true" />
+                  Strategies
+                </h2>
+                <button className="icon-btn" type="button" aria-label="Add Strategy" onClick={addStrategy}>
+                  <Plus size={16} aria-hidden="true" />
+                </button>
+              </div>
+
+              <div className="strategy-list">
+                {strategies.map((strategy, index) => (
+                  <StrategyEditor
+                    key={strategy.id}
+                    strategy={strategy}
+                    index={index}
+                    canRemove={strategies.length > 1}
+                    errors={strategyErrors.get(strategy.id) ?? {}}
+                    onChange={(patch) => updateStrategy(strategy.id, patch)}
+                    onRemove={() => removeStrategy(strategy.id)}
+                  />
+                ))}
+              </div>
+
+              <div className="switch-row">
+                <span className="sr-label">
+                  Equal Capital
+                  <HelpTip label="Equal Capital" text="When enabled, each strategy receives the same target capital for apples-to-apples comparison." />
+                </span>
+                <button
+                  className="switch"
+                  type="button"
+                  role="switch"
+                  aria-checked={normalizeCapital}
+                  aria-label="Equal Capital"
+                  onClick={() => {
+                    invalidateResults();
+                    setNormalizeCapital((current) => !current);
+                  }}
+                />
+              </div>
+            </section>
           </div>
 
-          <div className="setup-summary" aria-label="Run Assumptions">
-            <span>{dateRange.startDate} to {dateRange.endDate}</span>
-            <span>{normalizeCapital ? "Equal Capital" : "As Configured"}</span>
-            <span>{strategies.reduce((sum, strategy) => sum + strategy.transactionFee, 0) > 0 ? "Fees Included" : "No Fees"}</span>
-          </div>
-
-          <div className="section-heading with-action">
-            <div>
-              <CalendarDays size={18} aria-hidden="true" />
-              <h2>Strategies</h2>
+          <div className="run-footer">
+            <div className="run-assumptions" aria-label="Run Assumptions">
+              <span className="assume">{dateRange.startDate} to {dateRange.endDate}</span>
+              <span className="assume">{normalizeCapital ? "Equal Capital" : "As Configured"}</span>
+              <span className="assume">{strategies.reduce((sum, strategy) => sum + strategy.transactionFee, 0) > 0 ? "Fees Included" : "No Fees"}</span>
             </div>
-            <button className="icon-button" type="button" aria-label="Add Strategy" onClick={addStrategy}>
-              <Plus size={17} aria-hidden="true" />
+            <button className="btn primary block lg run-button" type="button" onClick={runBacktest} disabled={runStatus === "loading"} aria-busy={runStatus === "loading"}>
+              {runStatus === "loading" ? <span className="run-spinner" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
+              {runStatus === "loading" ? "Running…" : "Run Backtests"}
             </button>
-          </div>
-
-          <div className="switch-row">
-            <input
-              id="normalize-capital"
-              type="checkbox"
-              checked={normalizeCapital}
-              onChange={(event) => setNormalizeCapital(event.target.checked)}
-            />
-            <span className="label-row">
-              <label htmlFor="normalize-capital">Equal Capital</label>
-              <HelpTip label="Equal Capital" text="When enabled, each strategy receives the same target capital for apples-to-apples comparison." />
-            </span>
-          </div>
-
-          <div className="run-action">
-            <button className="run-button" type="button" onClick={runBacktest} disabled={runStatus === "loading"}>
-              <Play size={17} aria-hidden="true" />
-              {runStatus === "loading" ? "Running..." : "Run Backtests"}
-            </button>
-          </div>
-          {error ? <p className="status-error" role="alert">{error}</p> : null}
-
-          <div className="strategy-list">
-            {strategies.map((strategy, index) => (
-              <StrategyEditor
-                key={strategy.id}
-                strategy={strategy}
-                index={index}
-                canRemove={strategies.length > 1}
-                onChange={(patch) => updateStrategy(strategy.id, patch)}
-                onRemove={() => removeStrategy(strategy.id)}
-              />
-            ))}
+            {error ? <StatusAlert className="run-alert" tone="error" message={error} role="alert" /> : null}
+            <p className="run-meta-line">
+              <CheckCircle2 size={13} aria-hidden="true" />
+              Deterministic — identical inputs always produce identical results.
+            </p>
           </div>
         </aside>
 
-        <section className="results-surface" aria-label="Backtest Results">
-          <div className="outcome-hero">
-            <div className="winner-panel">
-              <span className="panel-kicker-label inline-help">
+        <section className="results" aria-label="Backtest Results">
+          <div className="results-head">
+            <div className="rh-title">
+              <span className="kicker">Backtest Results</span>
+              <h2 className="page-title">Strategy Comparison</h2>
+              <p className="page-sub">
+                {results.length > 0
+                  ? `${results.length} run${results.length === 1 ? "" : "s"} · ${normalizeCapital ? "equal-capital comparison" : "as-configured comparison"} · ${selectedRun ? formatPriceSourceLabel(selectedRun.priceSource).toLowerCase() : "price history"}`
+                  : "Configure assets and strategies, then run the comparison."}
+              </p>
+            </div>
+            {results.length > 0 ? (
+              <div className="results-tools">
+                <RunPicker results={results} selectedRunId={selectedRun?.runId ?? ""} onSelect={setSelectedRunId} />
+              </div>
+            ) : null}
+          </div>
+
+          {resultsStale ? (
+            <StatusAlert tone="warning" message="Inputs changed since this run. Run Backtests again to refresh the comparison." role="status" />
+          ) : null}
+
+          {runWarning ? <StatusAlert tone="warning" message={runWarning} role="alert" /> : null}
+
+          <div className="hero">
+            <div className={`winner ${bestRun ? "" : "idle"}`}>
+              <span className="kicker">
                 Best Outcome
                 <HelpTip label="Best Outcome" text="The run with the highest final portfolio value across the current comparison set." />
               </span>
-              <strong>{bestRun ? `${bestRun.asset.symbol} / ${bestRun.strategyName}` : "Awaiting Run"}</strong>
-              <p>
+              <strong className="w-name">{bestRun ? `${bestRun.asset.symbol} / ${bestRun.strategyName}` : "Awaiting Run"}</strong>
+              <p className="w-desc">
                 {bestRun
                   ? `${formatCurrency(bestRun.metrics.finalValue)} final value with ${formatPercent(bestRun.metrics.totalReturn)} total return.`
                   : "Run a comparison to rank strategies by final portfolio value."}
               </p>
               {bestRun && secondBestRun ? (
-                <span className="winner-delta">
+                <span className="w-delta">
                   <ArrowUpRight size={15} aria-hidden="true" />
                   {formatCurrency(bestAdvantage)} ahead of next best ({formatPercent(bestAdvantagePercent)})
                 </span>
               ) : null}
             </div>
-            <div className="summary-grid">
+            <div className="metrics-grid">
               <MetricCard
                 label="Focused Value"
                 value={selectedRun ? formatCurrency(selectedRun.metrics.finalValue) : "-"}
@@ -514,9 +777,9 @@ function DashboardApp() {
               <MetricCard
                 label="Total Return"
                 value={selectedRun ? formatPercent(selectedRun.metrics.totalReturn) : "-"}
-                detail={selectedRun ? formatCurrency(totalInvested) : "Total Invested"}
-                helpText="Final value divided by total invested capital, minus one."
-                accent={selectedRun && selectedRun.metrics.totalReturn >= 0 ? "positive" : "negative"}
+                detail={selectedRun ? `${formatCurrency(totalInvested)} invested` : "Total Invested"}
+                helpText="Final value divided by the strategy target capital, minus one. Idle cash is included in final value."
+                accent={selectedRun ? (selectedRun.metrics.totalReturn >= 0 ? "positive" : "negative") : undefined}
                 icon={<Activity size={18} aria-hidden="true" />}
               />
               <MetricCard
@@ -531,7 +794,7 @@ function DashboardApp() {
                 value={selectedRun ? formatPercent(selectedRun.metrics.maxDrawdown) : "-"}
                 detail={bestRun ? `Best ${bestRun.asset.symbol}` : "Risk"}
                 helpText="Largest peak-to-trough portfolio decline during the run."
-                accent="negative"
+                accent={selectedRun ? "negative" : undefined}
                 icon={<Activity size={18} aria-hidden="true" />}
               />
             </div>
@@ -545,97 +808,95 @@ function DashboardApp() {
             generatedAt={generatedAt}
           />
 
-          {results.length > 0 ? (
-            <DataExportPanel
-              results={results}
-              selectedRun={selectedRun}
-              selectedAssets={selectedAssets}
-              strategies={strategies}
-              normalizeCapital={normalizeCapital}
-              generatedAt={generatedAt}
-            />
-          ) : null}
+          {runStatus === "idle" ? <EmptyState /> : null}
 
-          {runStatus === "idle" ? (
-            <EmptyState />
-          ) : null}
+          {runStatus === "loading" ? <StateBlock tone="loading" title="Running strategy comparison" body="Replaying historical prices and computing metrics across every run." /> : null}
 
-          {runStatus === "loading" ? (
-            <div className="loading-state" role="status">
-              <span />
-              Running strategy comparison
-            </div>
-          ) : null}
+          {runStatus === "error" ? <StateBlock tone="error" title="Backtest failed" body={error ?? "Something went wrong running the comparison."} /> : null}
 
           {runStatus === "success" && results.length === 0 ? (
-            <div className="empty-state">
-              <h2>No Data</h2>
-              <p>The selected symbols returned no usable historical prices.</p>
-            </div>
+            <StateBlock tone="warning" title="No usable data" body="The selected symbols returned no usable historical prices for this window." />
           ) : null}
 
           {results.length > 0 ? (
             <>
-              <div className="chart-section">
-                <div className="section-title-row">
+              <section className="panel">
+                <div className="panel-head">
                   <div>
-                    <span className="panel-kicker-label">Comparison</span>
                     <h2>Portfolio Value</h2>
+                    <p className="ph-sub">Total value over time across all compared runs</p>
                   </div>
-                  <RunPicker results={results} selectedRunId={selectedRun?.runId ?? ""} onSelect={setSelectedRunId} />
                 </div>
-                <LineChart
-                  testId="portfolio-chart"
-                  results={results}
-                  valueKey="portfolioValue"
-                  label={(result) => `${result.asset.symbol} ${result.strategyName}`}
-                />
-              </div>
+                <div className="panel-body">
+                  <LineChart
+                    testId="portfolio-chart"
+                    results={results}
+                    selectedRunId={selectedRun?.runId ?? null}
+                    valueKey="portfolioValue"
+                    label={(result) => `${result.asset.symbol} ${result.strategyName}`}
+                  />
+                </div>
+              </section>
 
               {selectedRun ? (
-                <div className="chart-section two-column">
-                  <div>
-                    <div className="section-title-row">
+                <div className="two-col">
+                  <section className="panel">
+                    <div className="panel-head">
                       <div>
-                        <span className="panel-kicker-label">Capital Path</span>
                         <h2>Invested vs Value</h2>
+                        <p className="ph-sub">Capital deployed against portfolio value</p>
                       </div>
                       <span className="asset-pill">{selectedRun.asset.symbol}</span>
                     </div>
-                    <DualLineChart result={selectedRun} />
-                  </div>
-                  <div className="timing-panel">
-                    <h2>Contribution Timing</h2>
-                    <dl>
-                      <div>
-                        <dt>
-                          Best Timing Impact
-                          <HelpTip label="Best Timing Impact" text="The strongest final-price gain among the focused run's individual purchases." align="right" />
-                        </dt>
-                        <dd>{selectedRun.metrics.bestTimingImpact === null ? "-" : formatPercent(selectedRun.metrics.bestTimingImpact)}</dd>
-                      </div>
-                      <div>
-                        <dt>
-                          Worst Timing Impact
-                          <HelpTip label="Worst Timing Impact" text="The weakest final-price gain or loss among the focused run's individual purchases." align="right" />
-                        </dt>
-                        <dd>{selectedRun.metrics.worstTimingImpact === null ? "-" : formatPercent(selectedRun.metrics.worstTimingImpact)}</dd>
-                      </div>
-                      <div>
-                        <dt>Purchases</dt>
-                        <dd>{selectedRun.metrics.numberOfPurchases}</dd>
-                      </div>
-                      <div>
-                        <dt>Average Price</dt>
-                        <dd>{formatCurrency(selectedRun.metrics.averagePurchasePrice)}</dd>
-                      </div>
-                    </dl>
-                  </div>
+                    <div className="panel-body">
+                      <DualLineChart result={selectedRun} />
+                    </div>
+                  </section>
+                  <section className="panel timing">
+                    <div className="panel-head">
+                      <h2>Contribution Timing</h2>
+                    </div>
+                    <div className="panel-body">
+                      <dl>
+                        <div>
+                          <dt>
+                            Best Timing Impact
+                            <HelpTip label="Best Timing Impact" text="The strongest final-price gain among the focused run's individual purchases." align="right" />
+                          </dt>
+                          <dd>{selectedRun.metrics.bestTimingImpact === null ? "-" : formatPercent(selectedRun.metrics.bestTimingImpact)}</dd>
+                        </div>
+                        <div>
+                          <dt>
+                            Worst Timing Impact
+                            <HelpTip label="Worst Timing Impact" text="The weakest final-price gain or loss among the focused run's individual purchases." align="right" />
+                          </dt>
+                          <dd>{selectedRun.metrics.worstTimingImpact === null ? "-" : formatPercent(selectedRun.metrics.worstTimingImpact)}</dd>
+                        </div>
+                        <div>
+                          <dt>Purchases</dt>
+                          <dd>{selectedRun.metrics.numberOfPurchases}</dd>
+                        </div>
+                        <div>
+                          <dt>Average Cost / Unit</dt>
+                          <dd>{formatCurrency(selectedRun.metrics.averagePurchasePrice)}</dd>
+                        </div>
+                      </dl>
+                    </div>
+                  </section>
                 </div>
               ) : null}
 
-              <ResultsTable results={results} />
+              <ResultsTable results={results} selectedRunId={selectedRun?.runId ?? null} onSelect={setSelectedRunId} />
               {selectedRun ? <TransactionsTable result={selectedRun} /> : null}
+              <DataExportPanel
+                results={results}
+                selectedRun={selectedRun}
+                selectedAssets={selectedAssets}
+                strategies={strategies}
+                normalizeCapital={normalizeCapital}
+                generatedAt={generatedAt}
+                warnings={runWarning ? [runWarning] : []}
+              />
             </>
           ) : null}
         </section>
@@ -648,87 +909,190 @@ function StrategyEditor({
   strategy,
   index,
   canRemove,
+  errors,
   onChange,
   onRemove
 }: {
   strategy: BacktestStrategy;
   index: number;
   canRemove: boolean;
+  errors: StrategyFieldErrors;
   onChange: (patch: Partial<BacktestStrategy>) => void;
   onRemove: () => void;
 }) {
+  const nameId = useId();
+  const typeButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const typeOptions: StrategyType[] = ["dca", "lump-sum"];
+
+  function selectTypeAt(index: number) {
+    const nextType = typeOptions[index];
+    onChange({ type: nextType });
+    requestAnimationFrame(() => typeButtonRefs.current[index]?.focus());
+  }
+
+  function handleTypeKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      event.preventDefault();
+      selectTypeAt((index + 1) % typeOptions.length);
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      event.preventDefault();
+      selectTypeAt((index - 1 + typeOptions.length) % typeOptions.length);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      selectTypeAt(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      selectTypeAt(typeOptions.length - 1);
+    }
+  }
+
   return (
-    <fieldset className="strategy-editor">
-      <legend>
-        <span className="legend-label">Strategy {index + 1}</span>
+    <fieldset className="strategy">
+      <legend className="strategy-head">
+        <span className="sh-label">Strategy {index + 1}</span>
         {canRemove ? (
-          <button type="button" aria-label={`Remove ${strategy.name}`} onClick={onRemove}>
+          <button className="icon-btn danger" type="button" aria-label={`Remove ${strategy.name}`} onClick={onRemove}>
             <Trash2 size={15} aria-hidden="true" />
           </button>
         ) : null}
       </legend>
-      <label className="field compact">
-        <span className="label-row">Name</span>
-        <input value={strategy.name} onChange={(event) => onChange({ name: event.target.value })} />
-      </label>
-      <div className="label-row segmented-label">
-        Strategy Type
-        <HelpTip label="Strategy Type" text="DCA invests on the schedule. Lump sum invests the target capital at the strategy start." />
-      </div>
-      <div className="segmented" role="group" aria-label={`${strategy.name} type`}>
-        {(["dca", "lump-sum"] as StrategyType[]).map((type) => (
-          <button
-            key={type}
-            type="button"
-            className={strategy.type === type ? "selected" : ""}
-            onClick={() => onChange({ type })}
-          >
-            {type === "dca" ? "DCA" : "Lump Sum"}
-          </button>
-        ))}
-      </div>
-      <div className="form-grid">
-        <NumberField label="Initial Investment" value={strategy.initialInvestment} onChange={(value) => onChange({ initialInvestment: value })} />
-        <NumberField label="Recurring Contribution" value={strategy.recurringContribution} onChange={(value) => onChange({ recurringContribution: value })} />
-        <DateField label="Start Date" value={strategy.startDate} onChange={(value) => onChange({ startDate: value })} />
-        <DateField label="End Date" value={strategy.endDate} onChange={(value) => onChange({ endDate: value })} />
-        <label className="field compact">
-          <span className="label-row">Frequency</span>
-          <select value={strategy.frequency} onChange={(event) => onChange({ frequency: event.target.value as ContributionFrequency })}>
-            <option value="daily">Daily</option>
-            <option value="weekly">Weekly</option>
-            <option value="monthly">Monthly</option>
-          </select>
+      <div className="strategy-body">
+        <label className={`field ${errors.name ? "invalid" : ""}`}>
+          <span className="field-label">Name</span>
+          <input
+            id={nameId}
+            value={strategy.name}
+            onChange={(event) => onChange({ name: event.target.value })}
+            aria-invalid={Boolean(errors.name)}
+            aria-describedby={errors.name ? `${nameId}-error` : undefined}
+          />
+          {errors.name ? <FieldError id={`${nameId}-error`} message={errors.name} /> : null}
         </label>
-        <NumberField label="Transaction Fee" value={strategy.transactionFee} onChange={(value) => onChange({ transactionFee: value })} />
-        <NumberField label="Cash Drag %" helpText="Annualized rate applied to uninvested cash while waiting for future purchases." value={strategy.cashDragPercent} onChange={(value) => onChange({ cashDragPercent: value })} />
+        <div className="field">
+          <span className="field-label">
+            Strategy Type
+            <HelpTip label="Strategy Type" text="DCA invests on the schedule. Lump sum invests the target capital at the strategy start." />
+          </span>
+          <div className="segmented" role="radiogroup" aria-label={`${strategy.name} type`}>
+            {typeOptions.map((type, typeIndex) => (
+              <button
+                key={type}
+                type="button"
+                role="radio"
+                aria-checked={strategy.type === type}
+                className={strategy.type === type ? "selected" : ""}
+                ref={(button) => {
+                  typeButtonRefs.current[typeIndex] = button;
+                }}
+                tabIndex={strategy.type === type ? 0 : -1}
+                onKeyDown={(event) => handleTypeKeyDown(event, typeIndex)}
+                onClick={() => onChange({ type })}
+              >
+                {type === "dca" ? "DCA" : "Lump Sum"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="field-grid">
+          <NumberField
+            label="Initial Investment"
+            value={strategy.initialInvestment}
+            error={errors.initialInvestment}
+            onChange={(value) => onChange({ initialInvestment: value })}
+          />
+          <NumberField
+            label="Recurring Contribution"
+            value={strategy.recurringContribution}
+            error={errors.recurringContribution}
+            onChange={(value) => onChange({ recurringContribution: value })}
+          />
+          <DateField label="Start Date" value={strategy.startDate} error={errors.startDate} onChange={(value) => onChange({ startDate: value })} />
+          <DateField label="End Date" value={strategy.endDate} error={errors.endDate} onChange={(value) => onChange({ endDate: value })} />
+          <label className="field">
+            <span className="field-label">Frequency</span>
+            <select value={strategy.frequency} onChange={(event) => onChange({ frequency: event.target.value as ContributionFrequency })}>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </label>
+          <NumberField label="Transaction Fee" value={strategy.transactionFee} error={errors.transactionFee} onChange={(value) => onChange({ transactionFee: value })} />
+          <NumberField
+            label="Cash Drag %"
+            helpText="Annualized rate applied to uninvested cash while waiting for future purchases."
+            value={strategy.cashDragPercent}
+            error={errors.cashDragPercent}
+            onChange={(value) => onChange({ cashDragPercent: value })}
+          />
+        </div>
       </div>
     </fieldset>
   );
 }
 
-function NumberField({ label, helpText, value, onChange }: { label: string; helpText?: string; value: number; onChange: (value: number) => void }) {
+function NumberField({
+  label,
+  helpText,
+  value,
+  error,
+  onChange
+}: {
+  label: string;
+  helpText?: string;
+  value: number;
+  error?: string;
+  onChange: (value: number) => void;
+}) {
   const inputId = useId();
 
   return (
-    <div className="field compact">
-      <span className="label-row">
+    <div className={`field ${error ? "invalid" : ""}`}>
+      <span className="field-label">
         <label htmlFor={inputId}>{label}</label>
         {helpText ? <HelpTip label={label} text={helpText} /> : null}
       </span>
-      <input id={inputId} type="number" min={label === "Cash Drag %" ? -99 : 0} step="0.01" value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <input
+        id={inputId}
+        type="number"
+        min={label === "Cash Drag %" ? -99 : 0}
+        step="0.01"
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error ? `${inputId}-error` : undefined}
+      />
+      {error ? <FieldError id={`${inputId}-error`} message={error} /> : null}
     </div>
   );
 }
 
-function DateField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function DateField({ label, value, error, onChange }: { label: string; value: string; error?: string; onChange: (value: string) => void }) {
   const inputId = useId();
 
   return (
-    <div className="field compact">
-      <span className="label-row"><label htmlFor={inputId}>{label}</label></span>
-      <input id={inputId} type="date" value={value} onChange={(event) => onChange(event.target.value)} />
+    <div className={`field ${error ? "invalid" : ""}`}>
+      <span className="field-label">
+        <label htmlFor={inputId}>{label}</label>
+      </span>
+      <input
+        id={inputId}
+        type="date"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error ? `${inputId}-error` : undefined}
+      />
+      {error ? <FieldError id={`${inputId}-error`} message={error} /> : null}
     </div>
+  );
+}
+
+function FieldError({ id, message }: { id: string; message: string }) {
+  return (
+    <span className="field-error" id={id} role="alert">
+      <AlertCircle size={13} aria-hidden="true" />
+      {message}
+    </span>
   );
 }
 
@@ -742,15 +1106,17 @@ function HelpTip({
   align?: "center" | "left" | "right";
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const tooltipId = useId();
 
   return (
     <span
-      className={`help-tip ${align === "center" ? "" : `align-${align}`} ${isOpen ? "open" : ""}`}
+      className={`help ${align === "right" ? "right" : ""} ${isOpen ? "open" : ""}`}
       onMouseEnter={() => setIsOpen(true)}
       onMouseLeave={() => setIsOpen(false)}
     >
       <button
         type="button"
+        aria-describedby={isOpen ? tooltipId : undefined}
         aria-expanded={isOpen}
         aria-label={`Help: ${label}`}
         title={text}
@@ -760,11 +1126,18 @@ function HelpTip({
           setIsOpen(true);
         }}
         onFocus={() => setIsOpen(true)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setIsOpen(false);
+            event.currentTarget.blur();
+          }
+        }}
       >
         <CircleHelp size={13} aria-hidden="true" />
       </button>
       <span
-        className="help-bubble"
+        id={tooltipId}
+        className="bubble"
         role="tooltip"
         style={
           isOpen
@@ -799,14 +1172,14 @@ function MetricCard({
   accent?: "positive" | "negative";
 }) {
   return (
-    <article className={`metric-card ${accent ?? ""}`}>
+    <article className={`metric ${accent === "positive" ? "pos" : accent === "negative" ? "neg" : ""}`}>
       <div>
-        <span className="metric-card-label">
+        <span className="m-label">
           {label}
           {helpText ? <HelpTip label={label} text={helpText} align="right" /> : null}
         </span>
-        <strong>{value}</strong>
-        <small>{detail}</small>
+        <strong className="m-value tnum">{value}</strong>
+        <small className="m-detail">{detail}</small>
       </div>
       {icon}
     </article>
@@ -828,38 +1201,38 @@ function RunMetadata({
 }) {
   return (
     <div className="run-metadata" aria-label="Run Metadata">
-      <span>
-        <strong>{resultCount || "-"}</strong>
-        <span className="metadata-label">Compared Runs</span>
-      </span>
-      <span>
-        <strong>{selectedRun ? formatPriceSourceLabel(selectedRun.priceSource) : "-"}</strong>
-        <span className="metadata-label">
+      <div>
+        <strong className="md-value tnum">{resultCount || "-"}</strong>
+        <span className="md-label">Compared Runs</span>
+      </div>
+      <div>
+        <strong className="md-value tnum">{selectedRun ? formatPriceSourceLabel(selectedRun.priceSource) : "-"}</strong>
+        <span className="md-label">
           Price Basis
           <HelpTip label="Price Basis" text="The historical price field used by the engine. Adjusted close is preferred when available." />
         </span>
-      </span>
-      <span>
-        <strong>{lastDataDate ?? "-"}</strong>
-        <span className="metadata-label">Last Data Date</span>
-      </span>
-      <span>
-        <strong>{selectedRun ? selectedRun.metrics.numberOfPurchases : "-"}</strong>
-        <span className="metadata-label">Purchases</span>
-      </span>
-      <span>
-        <strong>{selectedRun ? formatCurrency(selectedRun.metrics.feesPaid) : "-"}</strong>
-        <span className="metadata-label">Fees Paid</span>
-      </span>
-      <span>
-        <strong>{normalizeCapital ? "Equalized" : "As Configured"}</strong>
-        <span className="metadata-label">Capital Logic</span>
-      </span>
+      </div>
+      <div>
+        <strong className="md-value tnum">{lastDataDate ?? "-"}</strong>
+        <span className="md-label">Last Data Date</span>
+      </div>
+      <div>
+        <strong className="md-value tnum">{selectedRun ? selectedRun.metrics.numberOfPurchases : "-"}</strong>
+        <span className="md-label">Purchases</span>
+      </div>
+      <div>
+        <strong className="md-value tnum">{selectedRun ? formatCurrency(selectedRun.metrics.feesPaid) : "-"}</strong>
+        <span className="md-label">Fees Paid</span>
+      </div>
+      <div>
+        <strong className="md-value tnum">{normalizeCapital ? "Equalized" : "As Configured"}</strong>
+        <span className="md-label">Capital Logic</span>
+      </div>
       {generatedAt ? (
-        <span>
-          <strong>{new Date(generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</strong>
-          <span className="metadata-label">Run Time</span>
-        </span>
+        <div>
+          <strong className="md-value tnum">{formatRunTimestamp(generatedAt)}</strong>
+          <span className="md-label">Run Time</span>
+        </div>
       ) : null}
     </div>
   );
@@ -871,7 +1244,8 @@ function DataExportPanel({
   selectedAssets,
   strategies,
   normalizeCapital,
-  generatedAt
+  generatedAt,
+  warnings
 }: {
   results: ApiBacktestResult[];
   selectedRun: ApiBacktestResult | null;
@@ -879,33 +1253,31 @@ function DataExportPanel({
   strategies: BacktestStrategy[];
   normalizeCapital: boolean;
   generatedAt: string | null;
+  warnings: string[];
 }) {
   return (
-    <section className="data-panel" aria-label="Data Exports And Formatting Standards">
-      <div className="data-panel-copy">
-        <span className="panel-kicker-label">Data Exports</span>
-        <h2>Export Data</h2>
-        <p>Download the computed comparison, focused run series, purchase schedule, or full JSON audit payload.</p>
-        <p className="format-note">Formatting: Title Case headings, data-first values, straight quotes, and spaced / separators.</p>
+    <section className="panel" aria-label="Data Exports And Formatting Standards">
+      <div className="panel-head">
+        <div>
+          <h2>Export Data</h2>
+          <p className="ph-sub">Comparison, focused series, schedule, or full JSON audit payload</p>
+        </div>
       </div>
-      <div className="export-actions" aria-label="Export Actions">
-        <button type="button" onClick={() => exportComparisonCsv(results)}>
-          <Download size={16} aria-hidden="true" />
+      <div className="panel-body export-actions" aria-label="Export Actions">
+        <button className="btn" type="button" onClick={() => exportComparisonCsv(results)}>
+          <Download size={15} aria-hidden="true" />
           Export Comparison CSV
         </button>
-        <button type="button" onClick={() => selectedRun && exportSeriesCsv(selectedRun)} disabled={!selectedRun}>
-          <Download size={16} aria-hidden="true" />
+        <button className="btn" type="button" onClick={() => selectedRun && exportSeriesCsv(selectedRun)} disabled={!selectedRun}>
+          <Download size={15} aria-hidden="true" />
           Export Focused Series CSV
         </button>
-        <button type="button" onClick={() => selectedRun && exportScheduleCsv(selectedRun)} disabled={!selectedRun}>
-          <Download size={16} aria-hidden="true" />
+        <button className="btn" type="button" onClick={() => selectedRun && exportScheduleCsv(selectedRun)} disabled={!selectedRun}>
+          <Download size={15} aria-hidden="true" />
           Export Schedule CSV
         </button>
-        <button
-          type="button"
-          onClick={() => exportFullJson({ results, selectedRun, selectedAssets, strategies, normalizeCapital, generatedAt })}
-        >
-          <FileJson size={16} aria-hidden="true" />
+        <button className="btn" type="button" onClick={() => exportFullJson({ results, selectedRun, selectedAssets, strategies, normalizeCapital, generatedAt, warnings })}>
+          <FileJson size={15} aria-hidden="true" />
           Export Full JSON
         </button>
       </div>
@@ -913,15 +1285,55 @@ function DataExportPanel({
   );
 }
 
+function StatusAlert({
+  tone,
+  message,
+  role,
+  className = ""
+}: {
+  tone: "success" | "warning" | "error" | "info";
+  message: string;
+  role: "alert" | "status";
+  className?: string;
+}) {
+  const Icon = tone === "success" ? CheckCircle2 : tone === "warning" ? AlertTriangle : tone === "error" ? AlertCircle : Info;
+
+  return (
+    <p className={`alert ${tone} ${className}`.trim()} role={role}>
+      <Icon size={15} aria-hidden="true" />
+      <span>{message}</span>
+    </p>
+  );
+}
+
+function StateBlock({ tone, title, body }: { tone: "idle" | "loading" | "warning" | "error"; title: string; body: string }) {
+  const icon =
+    tone === "loading" ? (
+      <span className="spinner-lg" aria-hidden="true" />
+    ) : tone === "error" ? (
+      <AlertCircle size={22} aria-hidden="true" />
+    ) : tone === "warning" ? (
+      <AlertTriangle size={22} aria-hidden="true" />
+    ) : (
+      <BarChart3 size={22} aria-hidden="true" />
+    );
+
+  return (
+    <div className={`state ${tone === "error" ? "error" : ""}`} role={tone === "loading" ? "status" : undefined}>
+      <span className="state-icon">{icon}</span>
+      <h2>{title}</h2>
+      <p>{body}</p>
+    </div>
+  );
+}
+
 function EmptyState() {
   return (
-    <div className="empty-state">
-      <span className="empty-icon" aria-hidden="true">
-        <BarChart3 size={24} />
-      </span>
-      <h2>Ready for Comparison</h2>
-      <p>Choose at least one asset and run the strategy set to generate ranked outcomes.</p>
-    </div>
+    <StateBlock
+      tone="idle"
+      title="Ready for Comparison"
+      body="Choose at least one asset and run the strategy set to generate ranked outcomes."
+    />
   );
 }
 
@@ -936,7 +1348,10 @@ function RunPicker({
 }) {
   return (
     <label className="run-picker">
-      <span className="label-row">Focused Run</span>
+      <span className="field-label">
+        Focused Run
+        <HelpTip label="Focused Run" text="The run highlighted across charts, metrics, and the transaction schedule." align="right" />
+      </span>
       <select value={selectedRunId} onChange={(event) => onSelect(event.target.value)}>
         {results.map((result) => (
           <option value={result.runId} key={result.runId}>
@@ -950,11 +1365,13 @@ function RunPicker({
 
 function LineChart({
   results,
+  selectedRunId,
   valueKey,
   label,
   testId
 }: {
   results: ApiBacktestResult[];
+  selectedRunId: string | null;
   valueKey: "portfolioValue" | "investedCapital";
   label: (result: ApiBacktestResult) => string;
   testId?: string;
@@ -968,19 +1385,20 @@ function LineChart({
   const maxValue = Math.max(...allPoints.map((point) => point.value), 1);
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
-  const rankedRunIds = [...results].sort((left, right) => right.metrics.finalValue - left.metrics.finalValue).map((result) => result.runId);
-  const colorForResult = (result: ApiBacktestResult, fallbackIndex: number) => {
-    const rank = rankedRunIds.indexOf(result.runId);
-    return colors[(rank >= 0 ? rank : fallbackIndex) % colors.length];
-  };
-  const xFor = (date: string) => padding.left + (dates.indexOf(date) / Math.max(dates.length - 1, 1)) * plotWidth;
+  const dateIndex = new Map(dates.map((date, index) => [date, index]));
+  const colorForIndex = (index: number) => colors[index % colors.length];
+  const xFor = (date: string) => padding.left + ((dateIndex.get(date) ?? 0) / Math.max(dates.length - 1, 1)) * plotWidth;
   const yFor = (value: number) => padding.top + (1 - (value - minValue) / (maxValue - minValue || 1)) * plotHeight;
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => minValue + (maxValue - minValue) * ratio);
   const xTicks = [0, 0.33, 0.66, 1].map((ratio) => dates[Math.round((dates.length - 1) * ratio)]).filter(Boolean);
 
   return (
-    <div className="chart-wrap" data-testid={testId}>
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Portfolio Value Over Time">
+    <div className="chart" data-testid={testId}>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${valueKey === "portfolioValue" ? "Portfolio value" : "Invested capital"} over time for ${results.length} compared runs`}>
+        <title>{valueKey === "portfolioValue" ? "Portfolio Value Over Time" : "Invested Capital Over Time"}</title>
+        <desc>
+          Compared runs: {results.map(label).join("; ")}. Values range from {formatCompactCurrency(minValue)} to {formatCompactCurrency(maxValue)}.
+        </desc>
         {yTicks.map((tick) => (
           <g key={tick}>
             <line x1={padding.left} x2={width - padding.right} y1={yFor(tick)} y2={yFor(tick)} className="grid-line" />
@@ -996,13 +1414,24 @@ function LineChart({
         ))}
         {results.map((result, index) => {
           const path = result.series.map((point, pointIndex) => `${pointIndex === 0 ? "M" : "L"} ${xFor(point.date)} ${yFor(point[valueKey])}`).join(" ");
-          return <path key={result.runId} d={path} fill="none" stroke={colorForResult(result, index)} strokeWidth="2.3" />;
+          const isFocused = result.runId === selectedRunId;
+          return (
+            <path
+              key={result.runId}
+              d={path}
+              fill="none"
+              opacity={selectedRunId && !isFocused ? 0.5 : 1}
+              stroke={colorForIndex(index)}
+              strokeLinejoin="round"
+              strokeWidth={isFocused ? "3.2" : "2.1"}
+            />
+          );
         })}
       </svg>
       <div className="chart-legend">
         {results.map((result, index) => (
-          <span key={result.runId}>
-            <i style={{ background: colorForResult(result, index) }} />
+          <span key={result.runId} className={result.runId === selectedRunId ? "selected" : "muted"}>
+            <i style={{ background: colorForIndex(index) }} />
             {label(result)}
           </span>
         ))}
@@ -1030,8 +1459,12 @@ function BalanceChart({ result }: { result: ApiBacktestResult }) {
     result.series.map((point, index) => `${index === 0 ? "M" : "L"} ${xFor(index)} ${yFor(point[key])}`).join(" ");
 
   return (
-    <div className="chart-wrap" data-testid="invested-chart">
+    <div className="chart" data-testid="invested-chart">
       <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Invested Capital Versus Current Value">
+        <title>Invested Capital Versus Current Value</title>
+        <desc>
+          {result.asset.symbol} {result.strategyName}: Dashed line shows invested capital and solid line shows portfolio value.
+        </desc>
         {yTicks.map((tick) => (
           <g key={tick}>
             <line x1={padding.left} x2={width - padding.right} y1={yFor(tick)} y2={yFor(tick)} className="grid-line" />
@@ -1045,52 +1478,76 @@ function BalanceChart({ result }: { result: ApiBacktestResult }) {
             {result.series[index]?.date.slice(0, 7)}
           </text>
         ))}
-        <path d={pathFor("investedCapital")} fill="none" stroke="#A6A89A" strokeDasharray="5 5" strokeWidth="2.2" />
-        <path d={pathFor("portfolioValue")} fill="none" stroke="#0E6F66" strokeWidth="2.4" />
+        <path d={pathFor("investedCapital")} fill="none" stroke="#A2ABB8" strokeDasharray="5 5" strokeWidth="2.2" />
+        <path d={pathFor("portfolioValue")} fill="none" stroke="#2E63E6" strokeLinejoin="round" strokeWidth="2.6" />
       </svg>
       <div className="chart-legend">
-        <span>
-          <i style={{ background: "#A6A89A" }} />
-          Invested
+        <span className="muted">
+          <i className="dash" style={{ color: "#A2ABB8" }} />
+          Invested capital
         </span>
         <span>
-          <i style={{ background: "#0E6F66" }} />
-          Value
+          <i style={{ background: "#2E63E6" }} />
+          Portfolio value
         </span>
       </div>
     </div>
   );
 }
 
-function ResultsTable({ results }: { results: ApiBacktestResult[] }) {
+function ResultsTable({
+  results,
+  selectedRunId,
+  onSelect
+}: {
+  results: ApiBacktestResult[];
+  selectedRunId: string | null;
+  onSelect: (runId: string) => void;
+}) {
   return (
-    <div className="table-section">
-      <h2>Results</h2>
-      <div className="table-scroll">
-        <table aria-label="Results Comparison">
+    <section className="panel">
+      <div className="panel-head">
+        <h2>Results</h2>
+        <span className="row-count">{results.length} runs</span>
+      </div>
+      <div className="table-wrap scroll-thin">
+        <table className="data" aria-label="Results Comparison">
           <thead>
             <tr>
-              <th>Asset</th>
-              <th>Strategy</th>
-              <th>Invested</th>
-              <th>Final Value</th>
-              <th>Return</th>
-              <th>CAGR</th>
-              <th>Drawdown</th>
-              <th>Purchases</th>
-              <th>Units</th>
+              <th scope="col">Asset</th>
+              <th scope="col">Strategy</th>
+              <th scope="col">Invested</th>
+              <th scope="col">Final Value</th>
+              <th scope="col">Return</th>
+              <th scope="col">CAGR</th>
+              <th scope="col">Drawdown</th>
+              <th scope="col">Purchases</th>
+              <th scope="col">Units</th>
             </tr>
           </thead>
           <tbody>
             {results.map((result) => (
-              <tr key={result.runId}>
-                <td>{result.asset.symbol}</td>
+              <tr
+                key={result.runId}
+                className={`clickable ${result.runId === selectedRunId ? "focused" : ""}`}
+                aria-current={result.runId === selectedRunId ? "true" : undefined}
+                aria-selected={result.runId === selectedRunId}
+                tabIndex={0}
+                onClick={() => onSelect(result.runId)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelect(result.runId);
+                  }
+                }}
+              >
+                <th scope="row">{result.asset.symbol}</th>
                 <td>{result.strategyName}</td>
                 <td>{formatCurrency(result.metrics.totalInvested)}</td>
                 <td>{formatCurrency(result.metrics.finalValue)}</td>
-                <td className={result.metrics.totalReturn >= 0 ? "positive-text" : "negative-text"}>{formatPercent(result.metrics.totalReturn)}</td>
+                <td className={result.metrics.totalReturn >= 0 ? "cell-pos" : "cell-neg"}>{formatPercent(result.metrics.totalReturn)}</td>
                 <td>{formatPercent(result.metrics.cagr)}</td>
-                <td className="negative-text">{formatPercent(result.metrics.maxDrawdown)}</td>
+                <td className="cell-neg">{formatPercent(result.metrics.maxDrawdown)}</td>
                 <td>{result.metrics.numberOfPurchases}</td>
                 <td>{formatNumber(result.metrics.unitsAccumulated)}</td>
               </tr>
@@ -1098,33 +1555,36 @@ function ResultsTable({ results }: { results: ApiBacktestResult[] }) {
           </tbody>
         </table>
       </div>
-    </div>
+    </section>
   );
 }
 
 function TransactionsTable({ result }: { result: ApiBacktestResult }) {
   return (
-    <div className="table-section">
-      <div className="heading-row">
-        <h2>Transactions</h2>
-        <HelpTip label="Transactions" text="Focused run purchase schedule matched to available historical price dates." />
+    <section className="panel">
+      <div className="panel-head">
+        <div className="heading-row">
+          <h2>Transactions</h2>
+          <HelpTip label="Transactions" text="Focused run purchase schedule matched to available historical price dates." align="right" />
+        </div>
+        <span className="row-count">{result.transactions.length} rows</span>
       </div>
-      <div className="table-scroll transaction-scroll">
-        <table aria-label="Purchase Schedule">
+      <div className="table-wrap table-scroll-y scroll-thin">
+        <table className="data" aria-label="Purchase Schedule">
           <thead>
             <tr>
-              <th>Due Date</th>
-              <th>Price Date</th>
-              <th>Gross</th>
-              <th>Fee</th>
-              <th>Price</th>
-              <th>Units</th>
+              <th scope="col">Due Date</th>
+              <th scope="col">Price Date</th>
+              <th scope="col">Gross</th>
+              <th scope="col">Fee</th>
+              <th scope="col">Price</th>
+              <th scope="col">Units</th>
             </tr>
           </thead>
           <tbody>
             {result.transactions.map((transaction) => (
               <tr key={transaction.id}>
-                <td>{transaction.dueDate}</td>
+                <th scope="row">{transaction.dueDate}</th>
                 <td>{transaction.date}</td>
                 <td>{formatCurrency(transaction.grossAmount)}</td>
                 <td>{formatCurrency(transaction.fee)}</td>
@@ -1135,7 +1595,7 @@ function TransactionsTable({ result }: { result: ApiBacktestResult }) {
           </tbody>
         </table>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -1159,7 +1619,7 @@ function exportComparisonCsv(results: ApiBacktestResult[]) {
       "Best Timing Impact",
       "Worst Timing Impact",
       "Purchases",
-      "Average Purchase Price",
+      "Average Cost / Unit",
       "Units Accumulated",
       "Fees Paid"
     ],
@@ -1229,7 +1689,8 @@ function exportFullJson({
   selectedAssets,
   strategies,
   normalizeCapital,
-  generatedAt
+  generatedAt,
+  warnings
 }: {
   results: ApiBacktestResult[];
   selectedRun: ApiBacktestResult | null;
@@ -1237,6 +1698,7 @@ function exportFullJson({
   strategies: BacktestStrategy[];
   normalizeCapital: boolean;
   generatedAt: string | null;
+  warnings: string[];
 }) {
   downloadFile(
     "quantdca-backtest-export.json",
@@ -1245,9 +1707,9 @@ function exportFullJson({
         generatedAt,
         focusedRunId: selectedRun?.runId ?? null,
         normalizeCapital,
+        warnings,
         selectedAssets,
         strategies,
-        formattingStandards: ["Title Case Headings", "Data-First Values", "Straight Quotes", "Spaced / Separators"],
         results
       },
       null,
@@ -1284,6 +1746,17 @@ function exportRunPrefix(result: ApiBacktestResult) {
 
 function formatPriceSourceLabel(priceSource: ApiBacktestResult["priceSource"]) {
   return priceSource === "adjusted-close" ? "Adjusted Close" : "Close";
+}
+
+function formatRunTimestamp(isoTimestamp: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short"
+  }).format(new Date(isoTimestamp));
 }
 
 function customCsvSymbol(fileName: string, selectedAssets: SelectedAsset[]) {

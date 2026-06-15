@@ -16,12 +16,27 @@ async function selectMicrosoft(page: import("@playwright/test").Page) {
 test("marketing website links into the working backtester", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "Would DCA Have Beaten Lump Sum? Find Out Exactly." })).toBeVisible();
-  await expect(page.getByText("Free / no account needed").first()).toBeVisible();
-  await expect(page.getByRole("contentinfo").getByRole("link", { name: "Methodology" })).toHaveAttribute("href", "/methodology");
+  await expect(page.getByRole("heading", { name: "DCA or lump sum? Run the receipts." })).toBeVisible();
+  await expect(page.getByText("S&P 500 or any supported asset")).toBeVisible();
+  await expect(page.getByText("Free — no account needed to run a comparison.").first()).toBeVisible();
+  await expect(page.getByText("quantdca.xyz")).toBeVisible();
+  await expect(page.getByText("S&P 500 · Lump Sum").first()).toBeVisible();
+  await expect(page.getByText("Search + CSV")).toBeVisible();
+  await expect(page.getByText("Step 04")).toBeVisible();
+  await expect(page.getByRole("link", { name: "About" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Brand" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Product" })).toHaveCount(0);
+  await expect(page.getByRole("contentinfo").getByRole("link", { name: "Methodology" })).toHaveAttribute("href", "#methodology");
 
   await page.getByRole("link", { name: "Run Backtests" }).first().click();
   await expect(page.getByRole("heading", { name: "Strategy Comparison Console" })).toBeVisible();
+});
+
+test("legacy public routes collapse to the minimal landing page", async ({ page }) => {
+  await page.goto("/about");
+
+  await expect(page.getByRole("heading", { name: "DCA or lump sum? Run the receipts." })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Principles" })).toHaveCount(0);
 });
 
 test("user can search, select an asset, configure DCA, and compare strategies", async ({ page }) => {
@@ -35,12 +50,17 @@ test("user can search, select an asset, configure DCA, and compare strategies", 
 
   await expect(page.getByText("Best Outcome")).toBeVisible();
   await expect(page.getByText("Focused Value")).toBeVisible();
-  await expect(page.getByText("Formatting: Title Case headings, data-first values, straight quotes, and spaced / separators.")).toBeVisible();
   await expect(page.getByTestId("portfolio-chart").locator("path")).toHaveCount(2);
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
   await expect(page.getByRole("table", { name: "Purchase Schedule" })).toBeVisible();
   await expect(page.getByRole("row", { name: /AAPL.US Monthly DCA/i })).toBeVisible();
   await expect(page.getByRole("row", { name: /AAPL.US Lump Sum/i })).toBeVisible();
+});
+
+test("asset search explains empty result sets", async ({ page }) => {
+  await page.goto("/app");
+  await page.getByRole("textbox", { name: "Asset Search", exact: true }).fill("ZZZZZZ");
+  await expect(page.getByText('No assets found for "ZZZZZZ".')).toBeVisible();
 });
 
 test("user can compare two selected assets across two strategies", async ({ page }) => {
@@ -61,6 +81,77 @@ test("error state renders for invalid input", async ({ page }) => {
   await page.goto("/app");
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
   await expect(page.getByRole("alert")).toHaveText("Select at least one asset.");
+});
+
+test("strategy controls expose inline validation and keyboard radio behavior", async ({ page }) => {
+  await page.goto("/app");
+  await selectApple(page);
+
+  const firstInitial = page.getByLabel("Initial Investment").first();
+  const firstRecurring = page.getByLabel("Recurring Contribution").first();
+  await firstInitial.fill("0");
+  await firstRecurring.fill("0");
+  await expect(page.getByText("At least one investment amount must be greater than zero.").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Monthly DCA: At least one investment amount must be greater than zero." })).toBeVisible();
+
+  const dcaRadio = page.getByRole("radio", { name: "DCA" }).first();
+  const lumpSumRadio = page.getByRole("radio", { name: "Lump Sum" }).first();
+  await dcaRadio.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(lumpSumRadio).toHaveAttribute("aria-checked", "true");
+  await expect(lumpSumRadio).toBeFocused();
+});
+
+test("existing results are marked stale after inputs change", async ({ page }) => {
+  await page.goto("/app");
+  await selectApple(page);
+  await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
+  await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
+
+  await page.locator('input[type="number"]').nth(1).fill("650");
+
+  await expect(page.getByText("Inputs changed since this run. Run Backtests again to refresh the comparison.")).toBeVisible();
+});
+
+test("keyboard users can choose the focused result row", async ({ page }) => {
+  await page.goto("/app");
+  await selectApple(page);
+  await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
+  await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
+
+  const lumpSumRow = page.getByRole("row", { name: /AAPL.US Lump Sum/i });
+  await lumpSumRow.focus();
+  await page.keyboard.press("Enter");
+
+  await expect(lumpSumRow).toHaveAttribute("aria-selected", "true");
+  await expect(lumpSumRow).toHaveAttribute("aria-current", "true");
+  await expect(page.getByText("Focused Run").first()).toBeVisible();
+});
+
+test("partial asset failures are shown without hiding successful runs", async ({ page }) => {
+  await page.route("**/api/backtests", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        generatedAt: "2026-06-15T12:00:00.000Z",
+        results: [apiResultFixture()],
+        errors: [{ code: "no_data", message: "No historical data found for MSFT.US.", status: 422, symbol: "MSFT.US" }]
+      })
+    });
+  });
+
+  await page.goto("/app");
+  await selectApple(page);
+  await selectMicrosoft(page);
+  await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
+
+  await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveText(
+    "Some assets could not be backtested. MSFT.US: No historical data found for MSFT.US."
+  );
 });
 
 test("asset search explains when the API route returns the web app HTML", async ({ page }) => {
@@ -92,6 +183,27 @@ test("mobile viewport remains usable", async ({ page }) => {
   expect(hasHorizontalOverflow).toBe(false);
 });
 
+test("mobile tables scroll without losing run controls", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "mobile project only");
+
+  await page.goto("/app");
+  await selectApple(page);
+  await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
+  await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
+
+  await expect(page.locator(".run-footer")).toHaveCSS("position", "sticky");
+  await expect(page.getByTestId("portfolio-chart")).toBeVisible();
+
+  const tableWrap = page.locator(".table-wrap").first();
+  const canScrollTable = await tableWrap.evaluate((element) => element.scrollWidth > element.clientWidth);
+  expect(canScrollTable).toBe(true);
+  const scrolledLeft = await tableWrap.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+    return element.scrollLeft;
+  });
+  expect(scrolledLeft).toBeGreaterThan(0);
+});
+
 test("user can export comparison data as CSV", async ({ page }) => {
   await page.goto("/app");
   await selectApple(page);
@@ -120,13 +232,25 @@ test("question mark help is selective and explains non-obvious assumptions", asy
   await expect(help).toHaveAttribute("title", /row 1 is ignored/);
   await help.click();
   await expect(help).toHaveAttribute("aria-expanded", "true");
+  await expect(help).toHaveAttribute("aria-describedby", /.+/);
   await expect(page.getByText("column A starts with YYYY-MM-DD dates")).toBeVisible();
+  await help.press("Escape");
+  await expect(help).toHaveAttribute("aria-expanded", "false");
+
+  await expect(page.getByRole("radio", { name: "DCA" }).first()).toHaveAttribute("aria-checked", "true");
 
   await selectApple(page);
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
   const postRunHelpCount = await page.locator('button[aria-label^="Help:"]').count();
   expect(postRunHelpCount).toBeLessThanOrEqual(16);
+});
+
+test("custom CSV upload has visible keyboard focus styling", async ({ page }) => {
+  await page.goto("/app");
+  await page.locator('input[type="file"]').focus();
+
+  await expect(page.locator(".file-drop")).toHaveCSS("border-color", "rgb(46, 99, 230)");
 });
 
 test("user can upload a custom CSV and run a backtest", async ({ page }, testInfo) => {
@@ -164,4 +288,74 @@ function customCsvFixture() {
     rows.push(`${date} 00:00:00 UTC,${100 + month},ignored`);
   }
   return `${rows.join("\n")}\n`;
+}
+
+function apiResultFixture() {
+  return {
+    runId: "AAPL.US:monthly-dca",
+    asset: { symbol: "AAPL.US", code: "AAPL", name: "Apple Inc.", exchange: "US", type: "Common Stock", currency: "USD" },
+    strategyId: "monthly-dca",
+    strategyName: "Monthly DCA",
+    targetCapital: 200,
+    priceSource: "adjusted-close",
+    metrics: {
+      totalInvested: 200,
+      remainingCash: 0,
+      finalValue: 220,
+      totalReturn: 0.1,
+      cagr: 0.1,
+      maxDrawdown: -0.02,
+      volatility: 0.12,
+      bestTimingImpact: 0.1,
+      worstTimingImpact: 0.05,
+      numberOfPurchases: 2,
+      averagePurchasePrice: 10,
+      unitsAccumulated: 20,
+      feesPaid: 0
+    },
+    transactions: [
+      {
+        id: "monthly-dca-1",
+        strategyId: "monthly-dca",
+        dueDate: "2024-01-01",
+        date: "2024-01-01",
+        grossAmount: 100,
+        fee: 0,
+        netAmount: 100,
+        price: 10,
+        units: 10
+      },
+      {
+        id: "monthly-dca-2",
+        strategyId: "monthly-dca",
+        dueDate: "2024-02-01",
+        date: "2024-02-01",
+        grossAmount: 100,
+        fee: 0,
+        netAmount: 100,
+        price: 10,
+        units: 10
+      }
+    ],
+    series: [
+      {
+        date: "2024-01-01",
+        price: 10,
+        investedCapital: 100,
+        marketValue: 100,
+        cashValue: 100,
+        portfolioValue: 200,
+        units: 10
+      },
+      {
+        date: "2024-02-01",
+        price: 11,
+        investedCapital: 200,
+        marketValue: 220,
+        cashValue: 0,
+        portfolioValue: 220,
+        units: 20
+      }
+    ]
+  };
 }
