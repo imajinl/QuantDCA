@@ -68,6 +68,26 @@ describe("backtest engine", () => {
     expect(monthly.transactions.map((transaction) => transaction.date)).toEqual(["2024-01-01", "2024-02-01"]);
   });
 
+  it("keeps month-end schedules anchored after clamped months", () => {
+    const prices = [
+      { date: "2024-01-31", close: 10 },
+      { date: "2024-02-29", close: 10 },
+      { date: "2024-03-31", close: 10 }
+    ];
+
+    const result = runBacktest(
+      prices,
+      strategy({ frequency: "monthly", startDate: "2024-01-31", endDate: "2024-03-31" }),
+      { targetCapital: 300 }
+    );
+
+    expect(result.transactions.map((transaction) => transaction.dueDate)).toEqual([
+      "2024-01-31",
+      "2024-02-29",
+      "2024-03-31"
+    ]);
+  });
+
   it("moves non-trading-day purchases to the next available price date", () => {
     const result = runBacktest(
       [{ date: "2024-01-02", close: 10 }],
@@ -87,12 +107,60 @@ describe("backtest engine", () => {
 
     expect(result.transactions[0]).toMatchObject({ grossAmount: 101, fee: 1, netAmount: 100, units: 10 });
     expect(result.metrics.feesPaid).toBe(1);
+    expect(result.metrics.averagePurchasePrice).toBe(10.1);
+  });
+
+  it("rejects scheduled contributions that would be fully consumed by fees", () => {
+    expect(() =>
+      runBacktest(dailyPrices, strategy({ initialInvestment: 100, recurringContribution: 0, transactionFee: 100 }), {
+        targetCapital: 100
+      })
+    ).toThrow("Transaction fee must be lower than every scheduled contribution.");
+  });
+
+  it("applies cash drag from the requested start date and caps buys to available cash", () => {
+    const result = runBacktest(
+      [{ date: "2024-01-01", close: 10 }],
+      strategy({
+        startDate: "2023-01-01",
+        endDate: "2024-01-01",
+        initialInvestment: 100,
+        recurringContribution: 0,
+        cashDragPercent: -50
+      }),
+      { targetCapital: 100 }
+    );
+
+    expect(result.transactions[0].grossAmount).toBeCloseTo(50, 0);
+    expect(result.metrics.finalValue).toBeCloseTo(50, 0);
+    expect(result.metrics.totalReturn).toBeCloseTo(-0.5, 1);
   });
 
   it("rejects empty or unusable price series", () => {
     expect(() => runBacktest([], strategy(), { targetCapital: 100 })).toThrow("Price series is empty");
     expect(() => runBacktest([{ date: "2024-01-01", close: 0 }], strategy(), { targetCapital: 100 })).toThrow(
       "usable positive prices"
+    );
+    expect(() => runBacktest([{ date: "2024-02-31", close: 10 }], strategy(), { targetCapital: 100 })).toThrow(
+      "usable positive prices"
+    );
+    expect(() => runBacktest(dailyPrices, strategy({ startDate: "2024-02-31" }), { targetCapital: 100 })).toThrow(
+      "valid YYYY-MM-DD calendar dates"
+    );
+  });
+
+  it("rejects non-finite strategy inputs and target capital", () => {
+    expect(() => runBacktest(dailyPrices, strategy({ initialInvestment: Number.NaN }), { targetCapital: 100 })).toThrow(
+      "Initial investment must be a finite number."
+    );
+    expect(() =>
+      runBacktest(dailyPrices, strategy({ recurringContribution: Number.POSITIVE_INFINITY }), { targetCapital: 100 })
+    ).toThrow("Recurring contribution must be a finite number.");
+    expect(() => runBacktest(dailyPrices, strategy({ cashDragPercent: Number.NaN }), { targetCapital: 100 })).toThrow(
+      "Cash drag must be a finite number."
+    );
+    expect(() => runBacktest(dailyPrices, strategy(), { targetCapital: Number.NaN })).toThrow(
+      "Target capital must be a finite number."
     );
   });
 
@@ -121,16 +189,32 @@ describe("backtest engine", () => {
     expect(result.series.at(-1)?.portfolioValue).toBe(200);
   });
 
-  it("keeps undeployed cash in final portfolio value", () => {
+  it("falls back to close when adjusted close is only partially available", () => {
     const result = runBacktest(
-      dailyPrices,
-      strategy({ initialInvestment: 100, recurringContribution: 0, startDate: "2024-01-01", endDate: "2024-01-05" }),
+      [
+        { date: "2024-01-01", close: 20, adjustedClose: 10 },
+        { date: "2024-01-02", close: 40 }
+      ],
+      strategy({ initialInvestment: 100, recurringContribution: 0, startDate: "2024-01-01", endDate: "2024-01-02" }),
+      { targetCapital: 100 }
+    );
+
+    expect(result.priceSource).toBe("close");
+    expect(result.transactions[0]).toMatchObject({ price: 20, units: 5 });
+    expect(result.series.at(-1)?.portfolioValue).toBe(200);
+  });
+
+  it("keeps undeployed cash in final portfolio value when scheduled buys cannot execute", () => {
+    const result = runBacktest(
+      [{ date: "2024-01-01", close: 10 }],
+      strategy({ initialInvestment: 100, recurringContribution: 100, startDate: "2024-01-01", endDate: "2024-01-05" }),
       { targetCapital: 500 }
     );
 
     expect(result.metrics.totalInvested).toBe(100);
     expect(result.metrics.remainingCash).toBe(400);
-    expect(result.metrics.finalValue).toBe(540);
+    expect(result.metrics.finalValue).toBe(500);
+    expect(result.metrics.totalReturn).toBe(0);
   });
 
   it("does not execute scheduled buys that cannot reach an in-range price date", () => {
@@ -163,5 +247,46 @@ describe("backtest engine", () => {
 
     expect(result.transactions[0].price).toBe(20);
     expect(result.series.map((point) => point.date)).toEqual(["2024-01-01", "2024-01-03"]);
+  });
+
+  it("chooses adjusted close from the active strategy window", () => {
+    const comparison = compareStrategies(
+      [
+        { date: "2023-12-29", close: 50 },
+        { date: "2024-01-01", close: 20, adjustedClose: 10 },
+        { date: "2024-01-02", close: 40, adjustedClose: 20 }
+      ],
+      [
+        strategy({
+          id: "active-adjusted",
+          name: "Active Adjusted",
+          initialInvestment: 100,
+          recurringContribution: 0,
+          startDate: "2024-01-01",
+          endDate: "2024-01-02"
+        })
+      ]
+    );
+
+    const result = comparison.results[0];
+    expect(result.priceSource).toBe("adjusted-close");
+    expect(result.transactions[0]).toMatchObject({ price: 10, units: 10 });
+    expect(result.series.at(-1)?.portfolioValue).toBe(200);
+  });
+
+  it("scales normalized DCA contributions proportionally across the configured schedule", () => {
+    const result = runBacktest(
+      dailyPrices,
+      strategy({
+        initialInvestment: 100,
+        recurringContribution: 50,
+        startDate: "2024-01-01",
+        endDate: "2024-01-03"
+      }),
+      { targetCapital: 400 }
+    );
+
+    expect(result.transactions.map((transaction) => transaction.grossAmount)).toEqual([200, 100, 100]);
+    expect(result.metrics.totalInvested).toBe(400);
   });
 });

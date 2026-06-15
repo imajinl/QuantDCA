@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { PricePoint } from "../../lib/backtest";
+import { isIsoDate } from "../../lib/date";
 import { MarketDataError } from "../errors";
 import type { HistoricalPriceRequest, MarketAsset, MarketDataProvider } from "./types";
 
@@ -12,7 +13,9 @@ export interface EodhdProviderOptions {
   apiKey?: string;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
+  maxCacheEntries?: number;
   now?: () => number;
+  timeoutMs?: number;
 }
 
 const searchItemSchema = z
@@ -45,20 +48,27 @@ export class EodhdProvider implements MarketDataProvider {
   private readonly apiKey?: string;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly maxCacheEntries: number;
   private readonly now: () => number;
+  private readonly timeoutMs: number;
   private readonly cache = new Map<string, CacheEntry<unknown>>();
 
   constructor(options: EodhdProviderOptions = {}) {
     this.apiKey = options.apiKey;
     this.baseUrl = options.baseUrl ?? "https://eodhd.com/api";
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.maxCacheEntries = Math.max(1, options.maxCacheEntries ?? 200);
     this.now = options.now ?? Date.now;
+    this.timeoutMs = options.timeoutMs ?? 10_000;
   }
 
   async searchAssets(query: string): Promise<MarketAsset[]> {
     const trimmedQuery = query.trim();
     if (!trimmedQuery) {
       return [];
+    }
+    if (trimmedQuery.length > 80) {
+      throw new MarketDataError("bad_request", "Asset search query is too long.", 400);
     }
 
     return this.withCache(`search:${trimmedQuery.toLowerCase()}`, 15 * 60_000, async () => {
@@ -78,6 +88,9 @@ export class EodhdProvider implements MarketDataProvider {
     const symbol = request.symbol.trim();
     if (!symbol) {
       throw new MarketDataError("invalid_symbol", "Symbol is required.", 422);
+    }
+    if (symbol.length > 80) {
+      throw new MarketDataError("invalid_symbol", "Symbol is too long.", 422);
     }
 
     return this.withCache(`history:${symbol}:${request.from}:${request.to}`, 6 * 60 * 60_000, async () => {
@@ -115,7 +128,17 @@ export class EodhdProvider implements MarketDataProvider {
       url.searchParams.set(key, value);
     }
 
-    const response = await this.fetchImpl(url);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, this.timeoutMs > 0 ? { signal: AbortSignal.timeout(this.timeoutMs) } : undefined);
+    } catch (error) {
+      const message =
+        error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")
+          ? "EODHD request timed out."
+          : "Could not reach EODHD.";
+      throw new MarketDataError("upstream_error", message, 502);
+    }
+
     if (response.status === 429) {
       throw new MarketDataError("rate_limited", "EODHD rate limit reached.", 429);
     }
@@ -123,9 +146,14 @@ export class EodhdProvider implements MarketDataProvider {
       throw new MarketDataError("upstream_error", `EODHD request failed with HTTP ${response.status}.`, 502);
     }
 
-    const json = await response.json();
+    let json: unknown;
+    try {
+      json = await response.json();
+    } catch {
+      throw new MarketDataError("upstream_error", "EODHD returned a non-JSON response.", 502);
+    }
     if (isApiErrorPayload(json)) {
-      throw new MarketDataError("invalid_symbol", json.message, 422);
+      throw new MarketDataError("invalid_symbol", sanitizeEodhdMessage(json.message), 422);
     }
 
     return json;
@@ -138,8 +166,25 @@ export class EodhdProvider implements MarketDataProvider {
     }
 
     const value = await load();
+    this.pruneExpiredCache();
+    while (this.cache.size >= this.maxCacheEntries) {
+      const oldestKey = this.cache.keys().next().value as string | undefined;
+      if (!oldestKey) {
+        break;
+      }
+      this.cache.delete(oldestKey);
+    }
     this.cache.set(key, { expiresAt: this.now() + ttlMs, value });
     return value;
+  }
+
+  private pruneExpiredCache(): void {
+    const now = this.now();
+    for (const [key, entry] of this.cache.entries()) {
+      if (entry.expiresAt <= now) {
+        this.cache.delete(key);
+      }
+    }
   }
 }
 
@@ -177,7 +222,7 @@ function normalizeHistoryItem(item: unknown): PricePoint | null {
   const adjustedRaw = parsed.data.adjusted_close ?? parsed.data.adjustedClose;
   const parsedAdjustedClose = adjustedRaw === undefined ? undefined : Number(adjustedRaw);
 
-  if (!Number.isFinite(close) || close <= 0) {
+  if (!isIsoDate(parsed.data.date) || !Number.isFinite(close) || close <= 0) {
     return null;
   }
 
@@ -197,4 +242,12 @@ function isApiErrorPayload(json: unknown): json is { message: string } {
   }
   const maybeError = json as { code?: unknown; message?: unknown };
   return typeof maybeError.message === "string" && maybeError.message.length > 0 && !Array.isArray(json);
+}
+
+function sanitizeEodhdMessage(message: string): string {
+  if (/api[_-]?token|api[_-]?key|EODHD_API_KEY|secret/i.test(message)) {
+    return "EODHD rejected the request.";
+  }
+
+  return message.slice(0, 240);
 }

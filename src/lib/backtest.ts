@@ -1,4 +1,4 @@
-import { addDays, addMonthsClamped, compareIsoDates, daysBetween } from "./date";
+import { addDays, addMonthsClamped, compareIsoDates, daysBetween, isIsoDate } from "./date";
 
 export type ContributionFrequency = "daily" | "weekly" | "monthly";
 export type StrategyType = "dca" | "lump-sum";
@@ -92,6 +92,10 @@ interface PlannedContribution {
   grossAmount: number;
 }
 
+interface ScheduledTransaction extends Transaction {
+  plannedGrossAmount: number;
+}
+
 export function compareStrategies(
   prices: PricePoint[],
   strategies: BacktestStrategy[],
@@ -133,6 +137,15 @@ export function runBacktest(
   if (activePrices.length === 0) {
     throw new Error("No historical prices are available in the requested date range.");
   }
+  const useAdjustedClose = activePrices.every((point) => point.adjustedClose !== undefined);
+  const pricedActivePrices = activePrices.map((point) => ({
+    ...point,
+    price: useAdjustedClose ? point.adjustedClose! : point.close
+  }));
+
+  if (!Number.isFinite(options.targetCapital)) {
+    throw new Error("Target capital must be a finite number.");
+  }
 
   const targetCapital = roundMoney(options.targetCapital);
   if (targetCapital <= 0) {
@@ -140,13 +153,16 @@ export function runBacktest(
   }
 
   const plannedContributions = planContributions(strategy, targetCapital);
-  const transactions = scheduleTransactions(plannedContributions, activePrices, strategy);
-  if (transactions.length === 0) {
+  const scheduledTransactions = scheduleTransactions(plannedContributions, pricedActivePrices, strategy);
+  if (scheduledTransactions.length === 0) {
     throw new Error("No purchases could be scheduled against the available price series.");
   }
+  if (scheduledTransactions.some((transaction) => transaction.plannedGrossAmount <= strategy.transactionFee)) {
+    throw new Error("Transaction fee must be lower than every scheduled contribution.");
+  }
 
-  const transactionsByDate = new Map<string, Transaction[]>();
-  for (const transaction of transactions) {
+  const transactionsByDate = new Map<string, ScheduledTransaction[]>();
+  for (const transaction of scheduledTransactions) {
     const existing = transactionsByDate.get(transaction.date) ?? [];
     existing.push(transaction);
     transactionsByDate.set(transaction.date, existing);
@@ -155,20 +171,44 @@ export function runBacktest(
   let units = 0;
   let investedCapital = 0;
   let cashValue = targetCapital;
-  let previousDate = activePrices[0].date;
+  let previousDate = strategy.startDate;
   let feesPaid = 0;
+  const transactions: Transaction[] = [];
   const series: PortfolioPoint[] = [];
   const annualCashRate = strategy.cashDragPercent / 100;
 
-  for (const pricePoint of activePrices) {
+  for (const pricePoint of pricedActivePrices) {
     const elapsedDays = Math.max(daysBetween(previousDate, pricePoint.date), 0);
     cashValue = applyCashDrag(cashValue, annualCashRate, elapsedDays);
 
-    for (const transaction of transactionsByDate.get(pricePoint.date) ?? []) {
-      cashValue = Math.max(0, cashValue - transaction.grossAmount);
+    for (const scheduledTransaction of transactionsByDate.get(pricePoint.date) ?? []) {
+      const grossAmount = roundMoney(Math.min(scheduledTransaction.plannedGrossAmount, cashValue));
+      if (grossAmount <= 0) {
+        continue;
+      }
+
+      const fee = Math.min(roundMoney(strategy.transactionFee), grossAmount);
+      const netAmount = roundMoney(Math.max(grossAmount - fee, 0));
+      if (netAmount <= 0) {
+        continue;
+      }
+      const transaction: Transaction = {
+        id: scheduledTransaction.id,
+        strategyId: scheduledTransaction.strategyId,
+        dueDate: scheduledTransaction.dueDate,
+        date: scheduledTransaction.date,
+        price: scheduledTransaction.price,
+        grossAmount,
+        fee,
+        netAmount,
+        units: roundUnits(netAmount / pricePoint.price)
+      };
+
+      cashValue = roundMoney(Math.max(0, cashValue - grossAmount));
       investedCapital += transaction.grossAmount;
       feesPaid += transaction.fee;
       units += transaction.units;
+      transactions.push(transaction);
     }
 
     const marketValue = units * pricePoint.price;
@@ -184,12 +224,15 @@ export function runBacktest(
     previousDate = pricePoint.date;
   }
 
+  if (transactions.length === 0) {
+    throw new Error("No purchases could be executed with the available cash and price series.");
+  }
+
   const finalPoint = series[series.length - 1];
   const totalInvested = roundMoney(transactions.reduce((sum, transaction) => sum + transaction.grossAmount, 0));
-  const netInvested = transactions.reduce((sum, transaction) => sum + transaction.netAmount, 0);
   const unitsAccumulated = roundUnits(transactions.reduce((sum, transaction) => sum + transaction.units, 0));
-  const averagePurchasePrice = unitsAccumulated > 0 ? roundMoney(netInvested / unitsAccumulated) : 0;
-  const finalPrice = activePrices[activePrices.length - 1].price;
+  const averagePurchasePrice = unitsAccumulated > 0 ? roundMoney(totalInvested / unitsAccumulated) : 0;
+  const finalPrice = pricedActivePrices[pricedActivePrices.length - 1].price;
   const timingImpacts = transactions
     .filter((transaction) => transaction.units > 0)
     .map((transaction) => finalPrice / transaction.price - 1);
@@ -198,15 +241,15 @@ export function runBacktest(
     strategyId: strategy.id,
     strategyName: strategy.name,
     targetCapital,
-    priceSource: normalizedPrices.some((point) => point.adjustedClose !== undefined) ? "adjusted-close" : "close",
+    priceSource: useAdjustedClose ? "adjusted-close" : "close",
     metrics: {
       totalInvested,
       remainingCash: finalPoint.cashValue,
       finalValue: finalPoint.portfolioValue,
-      totalReturn: totalInvested > 0 ? finalPoint.portfolioValue / totalInvested - 1 : 0,
-      cagr: calculateCagr(totalInvested, finalPoint.portfolioValue, strategy.startDate, finalPoint.date),
+      totalReturn: targetCapital > 0 ? finalPoint.portfolioValue / targetCapital - 1 : 0,
+      cagr: calculateCagr(targetCapital, finalPoint.portfolioValue, strategy.startDate, finalPoint.date),
       maxDrawdown: calculateMaxDrawdown(series.map((point) => point.portfolioValue)),
-      volatility: calculateAnnualizedVolatility(series.map((point) => point.portfolioValue)),
+      volatility: calculateAnnualizedVolatility(series),
       bestTimingImpact: timingImpacts.length > 0 ? Math.max(...timingImpacts) : null,
       worstTimingImpact: timingImpacts.length > 0 ? Math.min(...timingImpacts) : null,
       numberOfPurchases: transactions.length,
@@ -226,16 +269,19 @@ export function normalizePriceSeries(prices: PricePoint[]): NormalizedPricePoint
 
   const deduped = new Map<string, NormalizedPricePoint>();
   for (const point of prices) {
-    const price = point.adjustedClose ?? point.close;
-    if (!point.date || !Number.isFinite(price) || price <= 0 || !Number.isFinite(point.close) || point.close <= 0) {
+    if (!point.date || !isIsoDate(point.date) || !Number.isFinite(point.close) || point.close <= 0) {
       continue;
     }
 
+    const adjustedClose =
+      point.adjustedClose !== undefined && Number.isFinite(point.adjustedClose) && point.adjustedClose > 0
+        ? point.adjustedClose
+        : undefined;
     deduped.set(point.date, {
       date: point.date,
       close: point.close,
-      adjustedClose: point.adjustedClose,
-      price
+      adjustedClose,
+      price: point.close
     });
   }
 
@@ -244,7 +290,11 @@ export function normalizePriceSeries(prices: PricePoint[]): NormalizedPricePoint
     throw new Error("Price series does not contain usable positive prices.");
   }
 
-  return normalized;
+  const useAdjustedClose = normalized.every((point) => point.adjustedClose !== undefined);
+  return normalized.map((point) => ({
+    ...point,
+    price: useAdjustedClose ? point.adjustedClose! : point.close
+  }));
 }
 
 export function calculatePlannedCapital(strategy: BacktestStrategy): number {
@@ -258,32 +308,36 @@ function planContributions(strategy: BacktestStrategy, targetCapital: number): P
     return [{ dueDate: strategy.startDate, grossAmount: targetCapital }];
   }
 
-  const contributions: PlannedContribution[] = [];
-  const initialInvestment = Math.min(strategy.initialInvestment, targetCapital);
-  if (initialInvestment > 0) {
-    contributions.push({ dueDate: strategy.startDate, grossAmount: initialInvestment });
+  const configuredContributions = configuredDcaContributions(strategy);
+  const configuredCapital = roundMoney(
+    configuredContributions.reduce((sum, contribution) => sum + contribution.grossAmount, 0)
+  );
+  if (configuredCapital <= 0) {
+    return [];
   }
 
-  let remainingCapital = roundMoney(targetCapital - initialInvestment);
-  if (remainingCapital <= 0) {
-    return contributions;
-  }
-
-  const recurringDates = recurringContributionDates(strategy);
-  if (recurringDates.length === 0) {
-    return contributions;
-  }
-
-  const baseContribution = roundMoney(remainingCapital / recurringDates.length);
-  recurringDates.forEach((dueDate, index) => {
-    const isLast = index === recurringDates.length - 1;
-    const grossAmount = isLast ? remainingCapital : Math.min(baseContribution, remainingCapital);
+  const scale = targetCapital / configuredCapital;
+  let remainingCapital = targetCapital;
+  return configuredContributions.flatMap((contribution, index) => {
+    const isLast = index === configuredContributions.length - 1;
+    const grossAmount = isLast ? remainingCapital : Math.min(roundMoney(contribution.grossAmount * scale), remainingCapital);
+    remainingCapital = roundMoney(remainingCapital - grossAmount);
     if (grossAmount > 0) {
-      contributions.push({ dueDate, grossAmount: roundMoney(grossAmount) });
-      remainingCapital = roundMoney(remainingCapital - grossAmount);
+      return [{ dueDate: contribution.dueDate, grossAmount: roundMoney(grossAmount) }];
     }
+    return [];
   });
+}
 
+function configuredDcaContributions(strategy: BacktestStrategy): PlannedContribution[] {
+  const contributions: PlannedContribution[] = [];
+  if (strategy.initialInvestment > 0) {
+    contributions.push({ dueDate: strategy.startDate, grossAmount: strategy.initialInvestment });
+  }
+
+  for (const dueDate of recurringContributionDates(strategy)) {
+    contributions.push({ dueDate, grossAmount: strategy.recurringContribution });
+  }
   return contributions;
 }
 
@@ -293,6 +347,20 @@ function recurringContributionDates(strategy: BacktestStrategy): string[] {
   }
 
   const dates: string[] = [];
+  if (strategy.frequency === "monthly") {
+    const firstMonthOffset = strategy.initialInvestment > 0 ? 1 : 0;
+    let monthOffset = firstMonthOffset;
+    let cursor = addMonthsClamped(strategy.startDate, monthOffset);
+
+    while (compareIsoDates(cursor, strategy.endDate) <= 0) {
+      dates.push(cursor);
+      monthOffset += 1;
+      cursor = addMonthsClamped(strategy.startDate, monthOffset);
+    }
+
+    return dates;
+  }
+
   let cursor = strategy.initialInvestment > 0 ? nextContributionDate(strategy.startDate, strategy.frequency) : strategy.startDate;
 
   while (compareIsoDates(cursor, strategy.endDate) <= 0) {
@@ -313,9 +381,10 @@ function scheduleTransactions(
   plannedContributions: PlannedContribution[],
   prices: NormalizedPricePoint[],
   strategy: BacktestStrategy
-): Transaction[] {
-  const transactions: Transaction[] = [];
+): ScheduledTransaction[] {
+  const transactions: ScheduledTransaction[] = [];
   const priceDates = prices.map((point) => point.date);
+  const pricesByDate = new Map(prices.map((point) => [point.date, point]));
 
   plannedContributions.forEach((contribution, index) => {
     const executionDate = findNextPriceDate(priceDates, contribution.dueDate);
@@ -323,23 +392,23 @@ function scheduleTransactions(
       return;
     }
 
-    const price = prices.find((point) => point.date === executionDate);
+    const price = pricesByDate.get(executionDate);
     if (!price) {
       return;
     }
 
-    const fee = Math.min(roundMoney(strategy.transactionFee), contribution.grossAmount);
-    const netAmount = roundMoney(Math.max(contribution.grossAmount - fee, 0));
+    const plannedGrossAmount = roundMoney(contribution.grossAmount);
     transactions.push({
       id: `${strategy.id}-${index + 1}`,
       strategyId: strategy.id,
       dueDate: contribution.dueDate,
       date: executionDate,
-      grossAmount: roundMoney(contribution.grossAmount),
-      fee,
-      netAmount,
+      grossAmount: plannedGrossAmount,
+      plannedGrossAmount,
+      fee: 0,
+      netAmount: plannedGrossAmount,
       price: price.price,
-      units: roundUnits(netAmount / price.price)
+      units: 0
     });
   });
 
@@ -347,17 +416,34 @@ function scheduleTransactions(
 }
 
 function findNextPriceDate(priceDates: string[], dueDate: string): string | null {
-  for (const priceDate of priceDates) {
+  let low = 0;
+  let high = priceDates.length - 1;
+  let candidate: string | null = null;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const priceDate = priceDates[mid];
     if (compareIsoDates(priceDate, dueDate) >= 0) {
-      return priceDate;
+      candidate = priceDate;
+      high = mid - 1;
+    } else {
+      low = mid + 1;
     }
   }
-  return null;
+
+  return candidate;
 }
 
 function validateStrategy(strategy: BacktestStrategy): void {
   if (!strategy.id || !strategy.name) {
     throw new Error("Strategy id and name are required.");
+  }
+  assertFiniteNumber(strategy.initialInvestment, "Initial investment");
+  assertFiniteNumber(strategy.recurringContribution, "Recurring contribution");
+  assertFiniteNumber(strategy.transactionFee, "Transaction fee");
+  assertFiniteNumber(strategy.cashDragPercent, "Cash drag");
+  if (!isIsoDate(strategy.startDate) || !isIsoDate(strategy.endDate)) {
+    throw new Error("Strategy dates must be valid YYYY-MM-DD calendar dates.");
   }
   if (compareIsoDates(strategy.startDate, strategy.endDate) > 0) {
     throw new Error("Start date must be before or equal to end date.");
@@ -373,6 +459,12 @@ function validateStrategy(strategy: BacktestStrategy): void {
   }
   if (strategy.cashDragPercent <= -100) {
     throw new Error("Cash drag must be greater than -100%.");
+  }
+}
+
+function assertFiniteNumber(value: number, label: string): void {
+  if (!Number.isFinite(value)) {
+    throw new Error(`${label} must be a finite number.`);
   }
 }
 
@@ -405,13 +497,16 @@ function calculateMaxDrawdown(values: number[]): number {
   return maxDrawdown;
 }
 
-function calculateAnnualizedVolatility(values: number[]): number {
+function calculateAnnualizedVolatility(series: PortfolioPoint[]): number {
   const returns: number[] = [];
-  for (let index = 1; index < values.length; index += 1) {
-    const previous = values[index - 1];
-    const current = values[index];
-    if (previous > 0 && current > 0) {
-      returns.push(current / previous - 1);
+  const intervals: number[] = [];
+  for (let index = 1; index < series.length; index += 1) {
+    const previous = series[index - 1];
+    const current = series[index];
+    const elapsedDays = daysBetween(previous.date, current.date);
+    if (previous.portfolioValue > 0 && current.portfolioValue > 0 && elapsedDays > 0) {
+      returns.push(current.portfolioValue / previous.portfolioValue - 1);
+      intervals.push(elapsedDays);
     }
   }
 
@@ -421,7 +516,8 @@ function calculateAnnualizedVolatility(values: number[]): number {
 
   const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
   const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1);
-  return Math.sqrt(variance) * Math.sqrt(252);
+  const averageIntervalDays = intervals.reduce((sum, value) => sum + value, 0) / intervals.length;
+  return Math.sqrt(variance) * Math.sqrt(365.25 / averageIntervalDays);
 }
 
 function roundMoney(value: number): number {

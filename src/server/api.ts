@@ -1,4 +1,5 @@
 import { compareStrategies, type BacktestStrategy, type PricePoint } from "../lib/backtest";
+import { isIsoDate } from "../lib/date";
 import { z } from "zod";
 import { MarketDataError, isMarketDataError } from "./errors";
 import { EodhdProvider } from "./providers/eodhd";
@@ -20,15 +21,22 @@ interface BacktestRequestBody {
   normalizeCapital?: boolean;
 }
 
-const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD dates.");
+const MAX_ASSETS_PER_BACKTEST = 6;
+const MAX_STRATEGIES_PER_BACKTEST = 6;
+const MAX_CUSTOM_PRICE_ROWS = 20_000;
+
+const isoDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD dates.")
+  .refine(isIsoDate, "Use a valid calendar date.");
 
 const assetSchema = z.object({
-  symbol: z.string().trim().min(1, "Asset symbol is required."),
-  code: z.string().trim().min(1, "Asset code is required."),
-  name: z.string().trim().min(1, "Asset name is required."),
-  exchange: z.string().optional(),
-  type: z.string().optional(),
-  currency: z.string().optional()
+  symbol: z.string().trim().min(1, "Asset symbol is required.").max(80, "Asset symbol is too long."),
+  code: z.string().trim().min(1, "Asset code is required.").max(80, "Asset code is too long."),
+  name: z.string().trim().min(1, "Asset name is required.").max(180, "Asset name is too long."),
+  exchange: z.string().max(40).optional(),
+  type: z.string().max(80).optional(),
+  currency: z.string().max(20).optional()
 });
 
 const pricePointSchema = z.object({
@@ -40,7 +48,7 @@ const pricePointSchema = z.object({
 const backtestAssetSchema = assetSchema
   .extend({
     source: z.enum(["provider", "custom-csv"]).optional(),
-    prices: z.array(pricePointSchema).optional()
+    prices: z.array(pricePointSchema).max(MAX_CUSTOM_PRICE_ROWS, "Custom CSV uploads are limited to 20,000 price rows.").optional()
   })
   .superRefine((asset, context) => {
     if (asset.source === "custom-csv" && (!asset.prices || asset.prices.length === 0)) {
@@ -72,8 +80,14 @@ const strategySchema = z
   });
 
 const backtestRequestSchema = z.object({
-  assets: z.array(backtestAssetSchema).min(1, "Select at least one asset."),
-  strategies: z.array(strategySchema).min(1, "Configure at least one strategy."),
+  assets: z
+    .array(backtestAssetSchema)
+    .min(1, "Select at least one asset.")
+    .max(MAX_ASSETS_PER_BACKTEST, `Select ${MAX_ASSETS_PER_BACKTEST} or fewer assets.`),
+  strategies: z
+    .array(strategySchema)
+    .min(1, "Configure at least one strategy.")
+    .max(MAX_STRATEGIES_PER_BACKTEST, `Configure ${MAX_STRATEGIES_PER_BACKTEST} or fewer strategies.`),
   normalizeCapital: z.boolean().optional()
 });
 
@@ -90,12 +104,15 @@ export function createApiHandler(dependencies: ApiDependencies = {}) {
 
       if (request.method === "GET" && url.pathname === "/api/assets/search") {
         const query = url.searchParams.get("q") ?? "";
-        const assets = await provider.searchAssets(query);
+        if (query.length > 80) {
+          throw new MarketDataError("bad_request", "Asset search query is too long.", 400);
+        }
+        const assets = await getProviderSearchResults(provider, query);
         return jsonResponse({ assets });
       }
 
       if (request.method === "POST" && url.pathname === "/api/backtests") {
-        const body = validateBacktestRequest(await request.json());
+        const body = validateBacktestRequest(await parseJsonRequest(request));
         const dateRange = getBacktestDateRange(body.strategies);
         const results = [];
         const errors = [];
@@ -105,7 +122,7 @@ export function createApiHandler(dependencies: ApiDependencies = {}) {
             const prices =
               asset.source === "custom-csv"
                 ? asset.prices ?? []
-                : await provider.getHistoricalPrices({
+                : await getProviderHistoricalPrices(provider, {
                     symbol: asset.symbol,
                     from: dateRange.startDate,
                     to: dateRange.endDate
@@ -145,6 +162,14 @@ export function createApiHandler(dependencies: ApiDependencies = {}) {
   };
 }
 
+async function parseJsonRequest(request: Request): Promise<unknown> {
+  try {
+    return await request.json();
+  } catch {
+    throw new MarketDataError("bad_request", "Request body must be valid JSON.", 400);
+  }
+}
+
 function toPublicAsset(asset: BacktestAsset): MarketAsset {
   const { symbol, code, name, exchange, type, currency } = asset;
   return { symbol, code, name, exchange, type, currency };
@@ -158,6 +183,33 @@ export function createProviderFromEnvironment(): MarketDataProvider {
   return new EodhdProvider({
     apiKey: process.env.EODHD_API_KEY
   });
+}
+
+async function getProviderSearchResults(provider: MarketDataProvider, query: string): Promise<MarketAsset[]> {
+  try {
+    return await provider.searchAssets(query);
+  } catch (error) {
+    throw normalizeProviderError(error, "Asset search failed while contacting the market data provider.");
+  }
+}
+
+async function getProviderHistoricalPrices(
+  provider: MarketDataProvider,
+  request: { symbol: string; from: string; to: string }
+): Promise<PricePoint[]> {
+  try {
+    return await provider.getHistoricalPrices(request);
+  } catch (error) {
+    throw normalizeProviderError(error, "Price history failed while contacting the market data provider.");
+  }
+}
+
+function normalizeProviderError(error: unknown, fallbackMessage: string): MarketDataError {
+  if (isMarketDataError(error)) {
+    return error;
+  }
+
+  return new MarketDataError("upstream_error", fallbackMessage, 502);
 }
 
 function validateBacktestRequest(input: unknown): BacktestRequestBody {

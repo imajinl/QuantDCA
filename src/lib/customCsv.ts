@@ -22,6 +22,7 @@ export function parseCustomPriceCsv(csvText: string): ParsedCustomCsv {
 
   const prices: PricePoint[] = [];
   const seenDates = new Set<string>();
+  const headerColumnCount = rows[0]?.length ?? 0;
 
   rows.slice(1).forEach((row, index) => {
     const rowNumber = index + 2;
@@ -31,6 +32,11 @@ export function parseCustomPriceCsv(csvText: string): ParsedCustomCsv {
 
     const dateCell = row[0]?.trim() ?? "";
     const priceCell = row[1]?.trim() ?? "";
+    if (headerColumnCount <= 2 && row.length > 2 && looksLikeSplitThousandsPrice(priceCell, row[2]?.trim() ?? "")) {
+      throw new CustomCsvParseError(
+        `Row ${rowNumber} column B appears to use an unquoted comma thousands separator. Quote prices like "$1,234.56" or remove the comma.`
+      );
+    }
     const date = parseDateCell(dateCell, rowNumber);
     const price = parsePriceCell(priceCell, rowNumber);
 
@@ -54,6 +60,10 @@ export function parseCustomPriceCsv(csvText: string): ParsedCustomCsv {
     lastDate: prices[prices.length - 1].date,
     rowCount: prices.length
   };
+}
+
+function looksLikeSplitThousandsPrice(leftCell: string, rightCell: string): boolean {
+  return /^\$?\d{1,3}$/.test(leftCell.trim()) && /^\d{3}(?:\.\d+)?$/.test(rightCell.trim());
 }
 
 function parseDateCell(cell: string, rowNumber: number): string {

@@ -26,6 +26,35 @@ export function loadServerEnv(path = resolve(process.cwd(), ".env")): void {
   }
 }
 
+export function parsePositiveIntegerEnv(value: string | undefined, fallback: number, label: string): number {
+  if (value === undefined || value.trim() === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${label} must be a positive integer.`);
+  }
+
+  return parsed;
+}
+
+export function parseServerPortEnv(env: NodeJS.ProcessEnv = process.env): number {
+  if (env.PORT !== undefined && env.PORT.trim() !== "") {
+    return parsePortEnv(env.PORT, 8787, "PORT");
+  }
+
+  return parsePortEnv(env.QDCA_API_PORT, 8787, "QDCA_API_PORT");
+}
+
+function parsePortEnv(value: string | undefined, fallback: number, label: string): number {
+  const parsed = parsePositiveIntegerEnv(value, fallback, label);
+  if (parsed > 65_535) {
+    throw new Error(`${label} must be an integer port between 1 and 65535.`);
+  }
+  return parsed;
+}
+
 function stripOptionalQuotes(value: string): string {
   if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
     return value.slice(1, -1);

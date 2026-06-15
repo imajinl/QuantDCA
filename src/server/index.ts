@@ -1,16 +1,18 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createApiHandler } from "./api";
-import { loadServerEnv } from "./env";
+import { loadServerEnv, parsePositiveIntegerEnv, parseServerPortEnv } from "./env";
+import { contentTypeFor, resolveStaticCandidate, shouldServeSpaFallback } from "./static";
 
 loadServerEnv();
 
-const port = Number(process.env.PORT ?? process.env.QDCA_API_PORT ?? 8787);
+const port = parseServerPortEnv();
 const host = process.env.HOST ?? "127.0.0.1";
 const distPath = resolve(process.cwd(), "dist");
 const handleApiRequest = createApiHandler();
+const maxRequestBytes = parsePositiveIntegerEnv(process.env.QDCA_MAX_REQUEST_BYTES, 2_000_000, "QDCA_MAX_REQUEST_BYTES");
 
 const server = createServer(async (incoming, outgoing) => {
   try {
@@ -31,9 +33,14 @@ const server = createServer(async (incoming, outgoing) => {
 
     await serveStatic(url.pathname, outgoing);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unexpected server error.";
+    if (error instanceof HttpResponseError) {
+      outgoing.writeHead(error.status, { "Content-Type": "application/json" });
+      outgoing.end(JSON.stringify({ error: { code: error.code, message: error.message } }));
+      return;
+    }
+
     outgoing.writeHead(500, { "Content-Type": "application/json" });
-    outgoing.end(JSON.stringify({ error: { code: "server_error", message } }));
+    outgoing.end(JSON.stringify({ error: { code: "server_error", message: "Unexpected server error." } }));
   }
 });
 
@@ -43,8 +50,19 @@ server.listen(port, host, () => {
 
 async function toWebRequest(incoming: IncomingMessage, url: URL): Promise<Request> {
   const chunks: Buffer[] = [];
+  const contentLength = Number(incoming.headers["content-length"] ?? 0);
+  if (Number.isFinite(contentLength) && contentLength > maxRequestBytes) {
+    throw new HttpResponseError("payload_too_large", requestLimitMessage(), 413);
+  }
+
+  let totalBytes = 0;
   for await (const chunk of incoming as AsyncIterable<Buffer>) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.byteLength;
+    if (totalBytes > maxRequestBytes) {
+      throw new HttpResponseError("payload_too_large", requestLimitMessage(), 413);
+    }
+    chunks.push(buffer);
   }
 
   const method = incoming.method ?? "GET";
@@ -64,6 +82,21 @@ async function toWebRequest(incoming: IncomingMessage, url: URL): Promise<Reques
   });
 }
 
+function requestLimitMessage(): string {
+  return `Request body exceeds the configured ${maxRequestBytes} byte limit.`;
+}
+
+class HttpResponseError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status: number
+  ) {
+    super(message);
+    this.name = "HttpResponseError";
+  }
+}
+
 async function serveStatic(pathname: string, outgoing: ServerResponse): Promise<void> {
   if (!existsSync(distPath)) {
     outgoing.writeHead(404, { "Content-Type": "text/plain" });
@@ -71,8 +104,21 @@ async function serveStatic(pathname: string, outgoing: ServerResponse): Promise<
     return;
   }
 
-  const candidatePath = join(distPath, pathname === "/" ? "index.html" : pathname);
-  const filePath = existsSync(candidatePath) && statSync(candidatePath).isFile() ? candidatePath : join(distPath, "index.html");
+  const candidatePath = resolveStaticCandidate(distPath, pathname);
+  if (!candidatePath) {
+    outgoing.writeHead(404, { "Content-Type": "text/plain" });
+    outgoing.end("Not found.");
+    return;
+  }
+
+  const hasStaticFile = existsSync(candidatePath) && statSync(candidatePath).isFile();
+  if (!hasStaticFile && !shouldServeSpaFallback(pathname)) {
+    outgoing.writeHead(404, { "Content-Type": "text/plain" });
+    outgoing.end("Not found.");
+    return;
+  }
+
+  const filePath = hasStaticFile ? candidatePath : join(distPath, "index.html");
   const contentType = contentTypeFor(filePath);
   outgoing.writeHead(200, { "Content-Type": contentType });
 
@@ -82,13 +128,4 @@ async function serveStatic(pathname: string, outgoing: ServerResponse): Promise<
   }
 
   createReadStream(filePath).pipe(outgoing);
-}
-
-function contentTypeFor(filePath: string): string {
-  const extension = extname(filePath);
-  if (extension === ".js") return "text/javascript";
-  if (extension === ".css") return "text/css";
-  if (extension === ".svg") return "image/svg+xml";
-  if (extension === ".json") return "application/json";
-  return "text/html";
 }

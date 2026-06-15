@@ -5,11 +5,25 @@ export function parseIsoDate(date: string): Date {
   }
 
   const [, year, month, day] = match;
-  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  if (toIsoDate(parsed) !== date) {
+    throw new Error(`Invalid ISO date: ${date}`);
+  }
+
+  return parsed;
 }
 
 export function toIsoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+export function isIsoDate(date: string): boolean {
+  try {
+    parseIsoDate(date);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function compareIsoDates(left: string, right: string): number {
