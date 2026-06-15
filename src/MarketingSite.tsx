@@ -27,8 +27,8 @@ const navItems = [
 ];
 
 const trustSignals = [
-  { icon: <ShieldCheck size={13} />, label: "Server-side API key" },
-  { icon: <Database size={13} />, label: "Adjusted-close data" },
+  { icon: <ShieldCheck size={13} />, label: "Server-side provider keys" },
+  { icon: <Database size={13} />, label: "Labeled data providers" },
   { icon: <CheckCircle2 size={13} />, label: "Deterministic engine" }
 ];
 
@@ -172,8 +172,8 @@ function LandingPage() {
               DCA or lump sum? <span>Run the receipts.</span>
             </h1>
             <p className="marketing-hero-lead">
-              Replay real market history for S&P 500 or any supported asset, compare DCA against lump sum on your schedule, and export
-              the numbers behind the answer.
+              Replay real market history for stocks, crypto, or custom CSV uploads, compare DCA against lump sum on your schedule, and
+              export the numbers behind the answer.
             </p>
             <div className="marketing-hero-actions">
               <a className="btn primary lg" href="/app">
@@ -203,8 +203,8 @@ function LandingPage() {
 
       <section className="wrap stat-wrap" aria-label="QuantDCA product facts">
         <div className="stat-row">
-          <StatItem label="Example asset" value="S&P 500" />
-          <StatItem label="Also supports" value="Search + CSV" />
+          <StatItem label="Provider routes" value="Stocks / Crypto" />
+          <StatItem label="Also supports" value="Custom CSV" />
           <StatItem label="Core comparison" value="DCA / Lump Sum" />
           <StatItem label="Full data export" value="CSV / JSON" />
         </div>
@@ -233,7 +233,7 @@ function LandingPage() {
             <HomeStep
               icon={<Search size={18} />}
               step="Step 01"
-              text="Start with the S&P 500 example, search supported market data, or upload a custom CSV. Compare up to six assets side by side."
+              text="Search provider-backed stocks or crypto, or upload a custom CSV. Every ticker choice keeps its data provider visible."
               title="Pick the market"
             />
             <HomeStep
@@ -261,11 +261,11 @@ function LandingPage() {
       <section className="marketing-section">
         <div className="wrap marketing-split">
           <div>
-            <span className="marketing-kicker">S&P 500 example</span>
-            <h2>A fair fight between DCA and lump sum</h2>
+            <span className="marketing-kicker">Asset-flexible engine</span>
+            <h2>A fair fight across stocks, crypto, or your own prices</h2>
             <p>
-              The mock uses S&P 500 to make the comparison concrete. The same engine works for any searched asset
-              or your own validated price history.
+              The mock uses a broad-market stock example to make the comparison concrete. The same engine works for provider-routed
+              stock and crypto assets, or your own validated price history.
             </p>
             <ul className="split-list">
               <li>
@@ -299,9 +299,9 @@ function LandingPage() {
             <h2>Simple rules, visible assumptions</h2>
           </div>
           <div className="marketing-grid g3">
-            <ValueCard icon={<Database size={18} />} title="Adjusted close first" text="Provider assets use adjusted close when every active row supports it; otherwise the run uses a consistent close-price basis." />
+            <ValueCard icon={<Database size={18} />} title="Provider-routed data" text="Stocks route to EODHD, crypto routes to CoinAPI, and provider labels stay visible through runs and exports." />
             <ValueCard icon={<Scale size={18} />} title="Equal capital" text="Comparisons normalize capital by default so DCA and lump sum are judged on the same money." />
-            <ValueCard icon={<ShieldCheck size={18} />} title="Keys stay server-side" text="The market-data API key never reaches the browser — search and prices are proxied through the server." />
+            <ValueCard icon={<ShieldCheck size={18} />} title="Keys stay server-side" text="Market-data provider keys never reach the browser — search and prices are proxied through the server." />
             <ValueCard icon={<Upload size={18} />} title="Custom CSV" text="Bring your own price series with strict date and positive USD price validation." />
             <ValueCard icon={<Download size={18} />} title="Full exports" text="Download the comparison, focused series, transaction schedule, or complete JSON audit payload." />
             <ValueCard icon={<CheckCircle2 size={18} />} title="Deterministic engine" text="Identical inputs produce identical results — no randomness, smoothing, or hidden sampling." />
@@ -345,7 +345,7 @@ function DashboardFramePreview() {
         <div className="preview-grid">
           <div className="preview-controls">
             <span className="preview-label">Asset</span>
-            <span className="preview-input">S&P 500</span>
+            <span className="preview-input">AAPL · EODHD</span>
             <span className="preview-label">Strategies</span>
             <span className="preview-chip">Monthly DCA</span>
             <span className="preview-chip">Lump Sum</span>
@@ -355,7 +355,7 @@ function DashboardFramePreview() {
           <div className="preview-results">
             <div className="preview-verdict">
               <small>Best outcome</small>
-              <strong>S&P 500 · Lump Sum</strong>
+              <strong>AAPL · EODHD · Lump Sum</strong>
               <span>$48,255 final value · +96.9%</span>
             </div>
             <ComparisonChart />
@@ -373,9 +373,9 @@ function DashboardFramePreview() {
 
 function ComparisonMock() {
   return (
-    <aside className="product-mock" aria-label="S&P 500 DCA versus lump sum preview">
+    <aside className="product-mock" aria-label="Provider-labeled DCA versus lump sum preview">
       <div className="product-mock-head">
-        <span>S&P 500 value</span>
+        <span>AAPL · EODHD value</span>
         <strong>DCA vs Lump Sum</strong>
       </div>
       <div className="product-mock-body">
@@ -383,11 +383,11 @@ function ComparisonMock() {
         <div className="mock-legend">
           <span>
             <i className="series-one" />
-            S&P 500 · DCA
+            AAPL · EODHD · DCA
           </span>
           <span>
             <i className="series-three" />
-            S&P 500 · Lump Sum
+            AAPL · EODHD · Lump Sum
           </span>
         </div>
         <div className="mock-metrics">
@@ -403,7 +403,7 @@ function ComparisonMock() {
 function ComparisonChart() {
   return (
     <div className="mock-chart">
-      <svg viewBox="0 0 440 180" preserveAspectRatio="none" role="img" aria-label="S&P 500 DCA versus lump sum comparison">
+      <svg viewBox="0 0 440 180" preserveAspectRatio="none" role="img" aria-label="Provider-labeled DCA versus lump sum comparison">
         <line className="chart-grid-line" x1="0" y1="45" x2="440" y2="45" />
         <line className="chart-grid-line" x1="0" y1="90" x2="440" y2="90" />
         <line className="chart-grid-line" x1="0" y1="135" x2="440" y2="135" />

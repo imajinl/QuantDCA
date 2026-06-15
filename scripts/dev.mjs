@@ -21,6 +21,7 @@ const webEnv = cleanEnv({
   QDCA_API_PORT: String(apiPort)
 });
 delete webEnv.EODHD_API_KEY;
+delete webEnv.COINAPI_API_KEY;
 delete webEnv.QDCA_USE_MOCK_DATA;
 
 const commands = [

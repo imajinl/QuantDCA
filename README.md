@@ -15,8 +15,8 @@ Legacy public marketing paths such as `/product`, `/methodology`, `/about`, and 
 
 The dashboard preserves the full v1 workflow:
 
-- EODHD-backed asset search through a server-side API route.
-- Historical daily prices using adjusted close when every active row supports it, otherwise a consistent close-price basis.
+- Provider-routed asset search through a server-side API route: EODHD for stocks and CoinAPI for crypto.
+- Historical daily prices with provider-specific price basis: EODHD uses adjusted close when every active row supports it, while CoinAPI crypto uses USD daily exchange-rate close.
 - Custom CSV uploads with strict parsing feedback.
 - Multi-asset and multi-strategy comparison.
 - DCA, lump sum, and frequency variants.
@@ -51,13 +51,14 @@ Create a local environment file:
 cp .env.example .env
 ```
 
-Set the server-only EODHD key:
+Set the server-only provider keys:
 
 ```bash
 EODHD_API_KEY=your_key_here
+COINAPI_API_KEY=your_key_here
 ```
 
-The frontend never receives the API key. Asset search and historical prices are requested through the local backend under `/api`.
+The frontend never receives provider keys. Do not create `VITE_` market-data key variables. Asset search and historical prices are requested through the local backend under `/api`.
 
 Optional local and deployment overrides are documented in `.env.example`: `QDCA_API_PORT`, `QDCA_WEB_PORT`, `QDCA_MAX_REQUEST_BYTES`, `HOST`, `PORT`, `QDCA_USE_MOCK_DATA`, and `QDCA_RUN_LIVE_TESTS`. Server ports must be valid TCP ports from `1` through `65535`; request byte limits must be positive integers.
 
@@ -80,13 +81,13 @@ npm run hooks:install
 
 `npm start` runs the built production server from `dist-server/server/index.js`. Use it after `npm run build`. By default it binds to `127.0.0.1`; set `HOST=0.0.0.0` only in deployment environments that require public interface binding.
 
-`npm run test:e2e` starts an isolated mock-data app on `127.0.0.1:5174` with its API on `127.0.0.1:8788` by default. Set `QDCA_WEB_PORT` / `QDCA_API_PORT` to run the browser tests on alternate ports. Playwright does not reuse an existing dev server, so browser tests remain deterministic and do not consume EODHD quota.
+`npm run test:e2e` starts an isolated mock-data app on `127.0.0.1:5174` with its API on `127.0.0.1:8788` by default. Set `QDCA_WEB_PORT` / `QDCA_API_PORT` to run the browser tests on alternate ports. Playwright does not reuse an existing dev server, so browser tests remain deterministic and do not consume EODHD or CoinAPI quota.
 
 `npm run verify` runs typecheck, lint, unit tests, production build, and deterministic e2e tests.
 
 `npm run audit:prod` runs a production dependency audit. It requires npm registry network access.
 
-The live provider smoke test runs only when both `EODHD_API_KEY` and `QDCA_RUN_LIVE_TESTS=1` are present.
+Live provider smoke tests run only when `QDCA_RUN_LIVE_TESTS=1` and the corresponding provider key is present. `EODHD_API_KEY` enables the EODHD stock smoke test, and `COINAPI_API_KEY` enables the CoinAPI crypto smoke test.
 
 `npm audit --omit=dev` is the underlying production dependency audit used by `npm run audit:prod`.
 
@@ -101,13 +102,14 @@ npm run build
 npm start
 ```
 
-The production server listens on `PORT` when the platform provides it, then falls back to `QDCA_API_PORT`, then `8787` for local production previews. Keep `EODHD_API_KEY` configured server-side only.
+The production server listens on `PORT` when the platform provides it, then falls back to `QDCA_API_PORT`, then `8787` for local production previews. Keep `EODHD_API_KEY` and `COINAPI_API_KEY` configured server-side only.
 
 Set these Railway variables:
 
 ```bash
 HOST=0.0.0.0
 EODHD_API_KEY=your_key_here
+COINAPI_API_KEY=your_key_here
 NODE_ENV=production
 ```
 
@@ -188,7 +190,7 @@ Next steps for GitHub:
 1. Push this repository to GitHub with `.github/workflows/ci.yml` committed.
 2. Open the repository's Actions tab and confirm the first `CI` run starts.
 3. In branch protection for `main`, require the `Quality` and `E2E` checks before merge.
-4. Do not add `EODHD_API_KEY` as a CI secret unless you intentionally want the live provider smoke test to consume quota. Without the secret, CI stays deterministic and uses mocked e2e data.
+4. Do not add `EODHD_API_KEY` or `COINAPI_API_KEY` as CI secrets unless you intentionally want live provider smoke tests to consume quota. Without those secrets, CI stays deterministic and uses mocked e2e data.
 
 ## Architecture
 
@@ -199,6 +201,8 @@ Next steps for GitHub:
 - `src/lib/backtest.ts`: Pure backtest engine and metrics.
 - `src/lib/customCsv.ts`: Strict custom CSV parser.
 - `src/server/providers/eodhd.ts`: EODHD provider with response normalization, validation, caching, and explicit error mapping.
+- `src/server/providers/coinapi.ts`: CoinAPI provider for crypto metadata search and USD exchange-rate history using server-only credentials.
+- `src/server/providers/routed.ts`: Provider router that sends stock assets to EODHD, crypto assets to CoinAPI, and lets custom CSV bypass external providers.
 - `src/server/api.ts`: Request handlers for asset search and backtest execution.
 - `src/server/static.ts`: Production static-file path and content-type helpers.
 - `tests/e2e/dashboard.spec.ts`: Browser coverage for marketing navigation, search, configuration, comparison, charts, exports, CSV upload, errors, and mobile usability.
@@ -209,7 +213,7 @@ Cash drag is modeled as annualized growth / decay on idle earmarked capital befo
 
 Equalized-capital mode uses the largest planned strategy contribution amount as the comparison budget, then scales each DCA strategy's scheduled contributions proportionally so its initial / recurring timing shape is preserved. Total return and CAGR use target capital as the denominator because final portfolio value includes both invested market value and remaining cash. Total invested remains the gross amount actually deployed into purchases, including fees. Average cost / unit is fee-inclusive.
 
-Provider backtests accept up to 6 assets and 6 strategies per request. Custom CSV uploads are limited to 20,000 price rows and API request bodies are capped at 2 MB by default through `QDCA_MAX_REQUEST_BYTES`.
+Provider backtests accept up to 6 assets and 6 strategies per request. Provider-backed assets carry a visible `dataProvider` label plus provider routing metadata in API responses and exported JSON so selected stocks keep using EODHD, selected crypto keeps using CoinAPI, and same-ticker assets from different providers remain distinguishable. Custom CSV uploads are limited to 20,000 price rows and API request bodies are capped at 2 MB by default through `QDCA_MAX_REQUEST_BYTES`.
 
 Custom CSV uploads require row 1 titles, column A valid `YYYY-MM-DD` calendar dates, and column B positive USD prices. Extra columns are ignored.
 

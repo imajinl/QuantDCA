@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 const env = { ...process.env };
 delete env.EODHD_API_KEY;
+delete env.COINAPI_API_KEY;
 delete env.QDCA_RUN_LIVE_TESTS;
 delete env.FORCE_COLOR;
 delete env.NO_COLOR;

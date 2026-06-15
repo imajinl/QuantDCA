@@ -8,17 +8,20 @@ describe("loadServerEnv", () => {
     const dir = join(tmpdir(), `quantdca-env-${Date.now()}`);
     mkdirSync(dir, { recursive: true });
     const envPath = join(dir, ".env");
-    writeFileSync(envPath, "EODHD_API_KEY=from-file\nQDCA_EXISTING=from-file\nQUOTED=\"quoted value\"\n");
+    writeFileSync(envPath, "EODHD_API_KEY=from-file\nCOINAPI_API_KEY=coin-file\nQDCA_EXISTING=from-file\nQUOTED=\"quoted value\"\n");
 
     process.env.QDCA_EXISTING = "already-set";
     delete process.env.QUOTED;
     const originalApiKey = process.env.EODHD_API_KEY;
+    const originalCoinApiKey = process.env.COINAPI_API_KEY;
     delete process.env.EODHD_API_KEY;
+    delete process.env.COINAPI_API_KEY;
 
     try {
       loadServerEnv(envPath);
 
       expect(process.env.EODHD_API_KEY).toBe("from-file");
+      expect(process.env.COINAPI_API_KEY).toBe("coin-file");
       expect(process.env.QDCA_EXISTING).toBe("already-set");
       expect(process.env.QUOTED).toBe("quoted value");
     } finally {
@@ -26,6 +29,11 @@ describe("loadServerEnv", () => {
         delete process.env.EODHD_API_KEY;
       } else {
         process.env.EODHD_API_KEY = originalApiKey;
+      }
+      if (originalCoinApiKey === undefined) {
+        delete process.env.COINAPI_API_KEY;
+      } else {
+        process.env.COINAPI_API_KEY = originalCoinApiKey;
       }
       delete process.env.QDCA_EXISTING;
       delete process.env.QUOTED;
