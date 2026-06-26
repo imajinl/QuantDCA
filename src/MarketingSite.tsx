@@ -28,7 +28,7 @@ const navItems = [
 
 const trustSignals = [
   { icon: <ShieldCheck size={13} />, label: "Server-side provider keys" },
-  { icon: <Database size={13} />, label: "Labeled data providers" },
+  { icon: <Database size={13} />, label: "Server-routed market data" },
   { icon: <CheckCircle2 size={13} />, label: "Deterministic engine" }
 ];
 
@@ -172,8 +172,8 @@ function LandingPage() {
               DCA or lump sum? <span>Run the receipts.</span>
             </h1>
             <p className="marketing-hero-lead">
-              Replay real market history for stocks, crypto, or custom CSV uploads, compare DCA against lump sum on your schedule, and
-              export the numbers behind the answer.
+              Replay real market history for stocks, crypto, or custom CSV uploads, compare DCA against lump sum in Simple mode,
+              then switch to Advanced when the conclusion needs stress-testing.
             </p>
             <div className="marketing-hero-actions">
               <a className="btn primary lg" href="/app">
@@ -206,7 +206,7 @@ function LandingPage() {
           <StatItem label="Provider routes" value="Stocks / Crypto" />
           <StatItem label="Also supports" value="Custom CSV" />
           <StatItem label="Core comparison" value="DCA / Lump Sum" />
-          <StatItem label="Full data export" value="CSV / JSON" />
+          <StatItem label="Export package" value="CSV / JSON / ZIP" />
         </div>
       </section>
 
@@ -233,25 +233,25 @@ function LandingPage() {
             <HomeStep
               icon={<Search size={18} />}
               step="Step 01"
-              text="Search provider-backed stocks or crypto, or upload a custom CSV. Every ticker choice keeps its data provider visible."
+              text="Search provider-backed stocks or crypto, or upload a custom CSV. Provider labels appear only while choosing from search results."
               title="Pick the market"
             />
             <HomeStep
               icon={<SlidersHorizontal size={18} />}
               step="Step 02"
-              text="Compare lump sum against DCA with dates, contribution cadence, transaction fees, and cash drag visible."
+              text="Start with the core setup, then switch to Advanced for setup checks, templates, fees, and cash-drag review."
               title="Set the strategy"
             />
             <HomeStep
               icon={<BarChart3 size={18} />}
               step="Step 03"
-              text="Read the winner, path, drawdown, timing impact, and transaction schedule without digging through a spreadsheet."
+              text="Read the winner in Simple mode, then inspect stress previews, guide-line annotations, and assumption checks in Advanced."
               title="Check the evidence"
             />
             <HomeStep
               icon={<CheckCircle2 size={18} />}
               step="Step 04"
-              text="Invest knowing whether the strategy has historically been on your side, then export the receipts."
+              text="Save the scenario locally, share a restorable link in your browser, then export the receipts."
               title="Act with context"
             />
           </div>
@@ -299,12 +299,12 @@ function LandingPage() {
             <h2>Simple rules, visible assumptions</h2>
           </div>
           <div className="marketing-grid g3">
-            <ValueCard icon={<Database size={18} />} title="Provider-routed data" text="Stocks route to EODHD, crypto routes to CoinAPI, and provider labels stay visible through runs and exports." />
+            <ValueCard icon={<Database size={18} />} title="Routed market data" text="Stocks and crypto route server-side to the right market data source without cluttering the comparison view." />
             <ValueCard icon={<Scale size={18} />} title="Equal capital" text="Comparisons normalize capital by default so DCA and lump sum are judged on the same money." />
             <ValueCard icon={<ShieldCheck size={18} />} title="Keys stay server-side" text="Market-data provider keys never reach the browser — search and prices are proxied through the server." />
             <ValueCard icon={<Upload size={18} />} title="Custom CSV" text="Bring your own price series with strict date and positive USD price validation." />
-            <ValueCard icon={<Download size={18} />} title="Full exports" text="Download the comparison, focused series, transaction schedule, or complete JSON audit payload." />
-            <ValueCard icon={<CheckCircle2 size={18} />} title="Deterministic engine" text="Identical inputs produce identical results — no randomness, smoothing, or hidden sampling." />
+            <ValueCard icon={<Download size={18} />} title="Simple first" text="The default dashboard keeps core setup, results, transactions, and exports visible without advanced panels." />
+            <ValueCard icon={<CheckCircle2 size={18} />} title="Advanced depth" text="Templates, scenarios, chart modes, guide-line annotations, sensitivity checks, and run drawers stay one toggle away." />
           </div>
         </div>
       </section>
@@ -345,7 +345,7 @@ function DashboardFramePreview() {
         <div className="preview-grid">
           <div className="preview-controls">
             <span className="preview-label">Asset</span>
-            <span className="preview-input">AAPL · EODHD</span>
+            <span className="preview-input">AAPL</span>
             <span className="preview-label">Strategies</span>
             <span className="preview-chip">Monthly DCA</span>
             <span className="preview-chip">Lump Sum</span>
@@ -355,13 +355,13 @@ function DashboardFramePreview() {
           <div className="preview-results">
             <div className="preview-verdict">
               <small>Best outcome</small>
-              <strong>AAPL · EODHD · Lump Sum</strong>
+              <strong>AAPL · Lump Sum</strong>
               <span>$48,255 final value · +96.9%</span>
             </div>
             <ComparisonChart />
             <div className="preview-metrics">
               <MockMetric label="CAGR" value="18.5%" />
-              <MockMetric label="Max DD" value="-0.8%" tone="negative" />
+              <MockMetric label="Drawdown" value="-0.8%" tone="negative" />
               <MockMetric label="Buys" value="1 / 48" />
             </div>
           </div>
@@ -373,9 +373,9 @@ function DashboardFramePreview() {
 
 function ComparisonMock() {
   return (
-    <aside className="product-mock" aria-label="Provider-labeled DCA versus lump sum preview">
+    <aside className="product-mock" aria-label="DCA versus lump sum preview">
       <div className="product-mock-head">
-        <span>AAPL · EODHD value</span>
+        <span>AAPL value</span>
         <strong>DCA vs Lump Sum</strong>
       </div>
       <div className="product-mock-body">
@@ -383,11 +383,11 @@ function ComparisonMock() {
         <div className="mock-legend">
           <span>
             <i className="series-one" />
-            AAPL · EODHD · DCA
+            AAPL · DCA
           </span>
           <span>
             <i className="series-three" />
-            AAPL · EODHD · Lump Sum
+            AAPL · Lump Sum
           </span>
         </div>
         <div className="mock-metrics">
@@ -403,7 +403,7 @@ function ComparisonMock() {
 function ComparisonChart() {
   return (
     <div className="mock-chart">
-      <svg viewBox="0 0 440 180" preserveAspectRatio="none" role="img" aria-label="Provider-labeled DCA versus lump sum comparison">
+      <svg viewBox="0 0 440 180" preserveAspectRatio="none" role="img" aria-label="DCA versus lump sum comparison">
         <line className="chart-grid-line" x1="0" y1="45" x2="440" y2="45" />
         <line className="chart-grid-line" x1="0" y1="90" x2="440" y2="90" />
         <line className="chart-grid-line" x1="0" y1="135" x2="440" y2="135" />
@@ -477,7 +477,7 @@ function MarketingFooter() {
                 Quant<b>DCA</b>
               </span>
             </a>
-            <p>Free backtesting for DCA, lump sum, and contribution schedules. Real data, deterministic math, exportable results.</p>
+            <p>Free backtesting for DCA, lump sum, and contribution schedules. Real data, deterministic math, inspectable results.</p>
           </div>
           <div className="marketing-footer-actions">
             <a href="#how-it-works">How It Works</a>

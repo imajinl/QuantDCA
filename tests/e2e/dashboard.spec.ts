@@ -13,6 +13,26 @@ async function selectMicrosoft(page: import("@playwright/test").Page) {
   await expect(page.getByText("MSFT.US", { exact: true })).toBeVisible();
 }
 
+async function openMobileExportIfNeeded(page: import("@playwright/test").Page, projectName: string) {
+  if (projectName === "mobile") {
+    await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
+    await page.getByRole("button", { name: "Export", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Export Data Package" })).toBeVisible();
+  }
+}
+
+async function openMobileSetupIfNeeded(page: import("@playwright/test").Page, projectName: string) {
+  if (projectName === "mobile") {
+    await page.getByRole("button", { name: "Setup", exact: true }).click();
+  }
+}
+
+async function enableAdvancedMode(page: import("@playwright/test").Page) {
+  const advancedButton = page.getByRole("button", { name: "Advanced Mode", exact: true });
+  await advancedButton.click();
+  await expect(advancedButton).toHaveAttribute("aria-pressed", "true");
+}
+
 test("marketing website links into the working backtester", async ({ page }) => {
   await page.goto("/");
 
@@ -20,7 +40,7 @@ test("marketing website links into the working backtester", async ({ page }) => 
   await expect(page.getByText("stocks, crypto, or custom CSV uploads")).toBeVisible();
   await expect(page.getByText("Free — no account needed to run a comparison.").first()).toBeVisible();
   await expect(page.getByText("quantdca.xyz")).toBeVisible();
-  await expect(page.getByText("AAPL · EODHD · Lump Sum").first()).toBeVisible();
+  await expect(page.getByText("AAPL · Lump Sum").first()).toBeVisible();
   await expect(page.getByText("Stocks / Crypto")).toBeVisible();
   await expect(page.getByText("Custom CSV").first()).toBeVisible();
   await expect(page.getByText("Step 04")).toBeVisible();
@@ -42,6 +62,9 @@ test("legacy public routes collapse to the minimal landing page", async ({ page 
 
 test("user can search, select an asset, configure DCA, and compare strategies", async ({ page }) => {
   await page.goto("/app");
+  await expect(page.getByRole("button", { name: "Simple Mode", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("Setup Quality")).toHaveCount(0);
+  await expect(page.getByLabel("Strategy Templates")).toHaveCount(0);
   await selectApple(page);
 
   await page.locator('input[type="date"]').nth(0).fill("2022-01-03");
@@ -50,14 +73,91 @@ test("user can search, select an asset, configure DCA, and compare strategies", 
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
 
   await expect(page.getByText("Best Outcome")).toBeVisible();
+  await expect(page.getByText("Plain-English Readout")).toBeVisible();
+  await expect(page.getByText("Assumption Health")).toHaveCount(0);
+  await expect(page.getByText("Sensitivity Lens")).toHaveCount(0);
+  await expect(page.getByText("Run Ranking")).toBeVisible();
   await expect(page.getByText("Focused Value")).toBeVisible();
   await expect(page.getByTestId("portfolio-chart").locator("path")).toHaveCount(2);
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
   await expect(page.getByRole("table", { name: "Purchase Schedule" })).toBeVisible();
-  await expect(page.locator(".run-picker select")).toContainText("AAPL.US · EODHD / Monthly DCA");
-  await expect(page.getByText("Data Provider")).toBeVisible();
-  await expect(page.getByRole("row", { name: /AAPL.US.*EODHD.*Monthly DCA/i })).toBeVisible();
-  await expect(page.getByRole("row", { name: /AAPL.US.*EODHD.*Lump Sum/i })).toBeVisible();
+  await expect(page.locator(".run-picker select")).toContainText("AAPL.US / Monthly DCA");
+  await expect(page.getByText("Data Provider")).toHaveCount(0);
+  await expect(page.getByRole("row", { name: /AAPL.US.*Monthly DCA/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /AAPL.US.*Lump Sum/i })).toBeVisible();
+});
+
+test("user can switch chart modes and hide runs from the legend", async ({ page }) => {
+  await page.goto("/app");
+  await enableAdvancedMode(page);
+  await selectApple(page);
+  await selectMicrosoft(page);
+  await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
+  await expect(page.getByTestId("portfolio-chart").locator("path")).toHaveCount(4);
+
+  await page.getByRole("tab", { name: "Drawdown", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Drawdown" })).toBeVisible();
+  await page.getByRole("button", { name: "Toggle Purchases Annotations", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Toggle Purchases Annotations", exact: true })).toHaveAttribute("aria-pressed", "true");
+
+  await page.getByRole("button", { name: "AAPL.US Monthly DCA" }).click();
+  await expect(page.getByTestId("portfolio-chart").locator("path")).toHaveCount(3);
+  await page.getByRole("button", { name: "Show all" }).click();
+  await expect(page.getByTestId("portfolio-chart").locator("path")).toHaveCount(4);
+});
+
+test("scenario workspace and methodology drawer are available", async ({ page }) => {
+  await page.goto("/app");
+  await enableAdvancedMode(page);
+  await selectApple(page);
+
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Scenario saved locally.")).toBeVisible();
+  await expect(page.getByText(/Scenario 1/)).toBeVisible();
+  await expect(page.getByLabel("Scenario Comparison")).toBeVisible();
+
+  await page.getByRole("button", { name: "Open Methodology", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Visible assumptions" })).toBeVisible();
+  await expect(page.getByText("Provider names are shown only while choosing assets from search results")).toBeVisible();
+  await page.getByRole("button", { name: "Close Methodology", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Visible assumptions" })).toHaveCount(0);
+});
+
+test("strategy presets, sensitivity controls, and run comparison drawer are available", async ({ page }) => {
+  await page.goto("/app");
+  await enableAdvancedMode(page);
+  await selectApple(page);
+
+  await page.getByRole("button", { name: "Toggle Display Density", exact: true }).click();
+  await expect(page.locator("main.app")).toHaveClass(/density-compact/);
+
+  await page.getByRole("button", { name: "Weekly DCA", exact: true }).click();
+  await expect(page.locator('input[value="Weekly DCA"]')).toBeVisible();
+  await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
+
+  await expect(page.getByText("Sensitivity Lens")).toBeVisible();
+  await page.getByLabel("Contribution Scale").fill("110");
+  await expect(page.getByText(/Winner (holds|changes)/)).toBeVisible();
+
+  await page.getByRole("row", { name: /AAPL.US.*Weekly DCA/i }).click();
+  await expect(page.getByRole("dialog", { name: /AAPL.US \/ Weekly DCA/i })).toBeVisible();
+  await expect(page.getByText("Run Comparison")).toBeVisible();
+  await page.getByRole("button", { name: "Close Run Comparison", exact: true }).click();
+});
+
+test("keyboard shortcuts focus search, run backtests, and switch chart modes", async ({ page }) => {
+  await page.goto("/app");
+  await enableAdvancedMode(page);
+
+  await page.keyboard.press("/");
+  await expect(page.getByRole("textbox", { name: "Asset Search", exact: true })).toBeFocused();
+  await selectApple(page);
+
+  await page.keyboard.press("r");
+  await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
+
+  await page.keyboard.press("2");
+  await expect(page.getByRole("heading", { name: "Drawdown" })).toBeVisible();
 });
 
 test("asset search dropdown distinguishes EODHD and Coin API provider labels", async ({ page }) => {
@@ -101,7 +201,9 @@ test("asset search dropdown distinguishes EODHD and Coin API provider labels", a
   await expect(page.getByRole("button", { name: /BTC.*Coin API/i })).toBeVisible();
 
   await page.getByRole("button", { name: /BTC.*Coin API/i }).click();
-  await expect(page.locator(".chip", { hasText: "BTC" }).getByText("Coin API")).toBeVisible();
+  await expect(page.locator(".chip", { hasText: "BTC" })).toBeVisible();
+  await expect(page.locator(".chips")).not.toContainText("Coin API");
+  await expect(page.locator(".chips")).not.toContainText("EODHD");
 });
 
 test("asset search explains empty result sets", async ({ page }) => {
@@ -118,10 +220,10 @@ test("user can compare two selected assets across two strategies", async ({ page
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
 
   await expect(page.getByTestId("portfolio-chart").locator("path")).toHaveCount(4);
-  await expect(page.getByRole("row", { name: /AAPL.US.*EODHD.*Monthly DCA/i })).toBeVisible();
-  await expect(page.getByRole("row", { name: /AAPL.US.*EODHD.*Lump Sum/i })).toBeVisible();
-  await expect(page.getByRole("row", { name: /MSFT.US.*EODHD.*Monthly DCA/i })).toBeVisible();
-  await expect(page.getByRole("row", { name: /MSFT.US.*EODHD.*Lump Sum/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /AAPL.US.*Monthly DCA/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /AAPL.US.*Lump Sum/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /MSFT.US.*Monthly DCA/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /MSFT.US.*Lump Sum/i })).toBeVisible();
 });
 
 test("error state renders for invalid input", async ({ page }) => {
@@ -151,13 +253,17 @@ test("strategy controls expose inline validation and keyboard radio behavior", a
   await expect(lumpSumRadio).toBeFocused();
 });
 
-test("existing results are marked stale after inputs change", async ({ page }) => {
+test("existing results are marked stale after inputs change", async ({ page }, testInfo) => {
   await page.goto("/app");
   await selectApple(page);
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
 
+  await openMobileSetupIfNeeded(page, testInfo.project.name);
   await page.locator('input[type="number"]').nth(1).fill("650");
+  if (testInfo.project.name === "mobile") {
+    await page.getByRole("button", { name: "Results", exact: true }).click();
+  }
 
   await expect(page.getByText("Inputs changed since this run. Run Backtests again to refresh the comparison.")).toBeVisible();
 });
@@ -168,7 +274,7 @@ test("keyboard users can choose the focused result row", async ({ page }) => {
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
 
-  const lumpSumRow = page.getByRole("row", { name: /AAPL.US.*EODHD.*Lump Sum/i });
+  const lumpSumRow = page.getByRole("row", { name: /AAPL.US.*Lump Sum/i });
   await lumpSumRow.focus();
   await page.keyboard.press("Enter");
 
@@ -197,7 +303,7 @@ test("partial asset failures are shown without hiding successful runs", async ({
 
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
   await expect(page.getByRole("alert")).toHaveText(
-    "Some assets could not be backtested. MSFT.US (EODHD): No historical data found for MSFT.US."
+    "Some assets could not be backtested. MSFT.US: No historical data found for MSFT.US."
   );
 });
 
@@ -238,7 +344,8 @@ test("mobile tables scroll without losing run controls", async ({ page }, testIn
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
 
-  await expect(page.locator(".run-footer")).toHaveCSS("position", "sticky");
+  await expect(page.getByRole("button", { name: "Setup", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Results", exact: true })).toHaveClass(/active/);
   await expect(page.getByTestId("portfolio-chart")).toBeVisible();
 
   const tableWrap = page.locator(".table-wrap").first();
@@ -251,10 +358,11 @@ test("mobile tables scroll without losing run controls", async ({ page }, testIn
   expect(scrolledLeft).toBeGreaterThan(0);
 });
 
-test("user can export comparison data as CSV", async ({ page }) => {
+test("user can export comparison data as CSV", async ({ page }, testInfo) => {
   await page.goto("/app");
   await selectApple(page);
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
+  await openMobileExportIfNeeded(page, testInfo.project.name);
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export Comparison CSV", exact: true }).click();
@@ -264,14 +372,56 @@ test("user can export comparison data as CSV", async ({ page }) => {
   const filePath = await download.path();
   expect(filePath).not.toBeNull();
   const csv = readFileSync(filePath!, "utf8");
-  expect(csv).toContain("Asset,Asset Name,Data Provider,Strategy,Price Basis");
+  expect(csv).toContain("Asset,Asset Name,Strategy,Price Basis");
   expect(csv).toContain("AAPL.US");
-  expect(csv).toContain("EODHD");
+  expect(csv).not.toContain("EODHD");
   expect(csv).toContain("Adjusted Close");
+});
+
+test("user can export JSON without provider labels", async ({ page }, testInfo) => {
+  await page.goto("/app");
+  await selectApple(page);
+  await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
+  await openMobileExportIfNeeded(page, testInfo.project.name);
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export Full JSON", exact: true }).click();
+  const download = await downloadPromise;
+
+  expect(download.suggestedFilename()).toBe("quantdca-backtest-export.json");
+  const filePath = await download.path();
+  expect(filePath).not.toBeNull();
+  const json = readFileSync(filePath!, "utf8");
+  expect(json).toContain('"symbol": "AAPL.US"');
+  expect(json).not.toContain("EODHD");
+  expect(json).not.toContain("Coin API");
+  expect(json).not.toContain("dataProvider");
+  expect(json).not.toContain('"provider"');
+  expect(json).not.toContain("eodhd:");
+});
+
+test("user can download a packaged ZIP export", async ({ page }, testInfo) => {
+  await page.goto("/app");
+  await enableAdvancedMode(page);
+  await selectApple(page);
+  await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
+  await openMobileExportIfNeeded(page, testInfo.project.name);
+
+  await expect(page.getByRole("table", { name: "Export Package Preview" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Size" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Privacy" })).toBeVisible();
+  await page.locator(".export-tile", { hasText: "Investor Memo" }).getByRole("checkbox").check();
+  await expect(page.getByLabel("Investor Memo Preview")).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download ZIP", exact: true }).click();
+  const download = await downloadPromise;
+
+  expect(download.suggestedFilename()).toBe("quantdca-data-package.zip");
 });
 
 test("question mark help is selective and explains non-obvious assumptions", async ({ page }) => {
   await page.goto("/app");
+  await enableAdvancedMode(page);
 
   await expect(page.locator('button[aria-label^="Help:"]')).toHaveCount(11);
   await expect(page.getByRole("button", { name: "Help: Asset Search", exact: true })).toHaveCount(0);
@@ -313,8 +463,8 @@ test("user can upload a custom CSV and run a backtest", async ({ page }, testInf
   await page.getByRole("button", { name: "Run Backtests", exact: true }).click();
 
   await expect(page.getByRole("table", { name: "Results Comparison" })).toBeVisible();
-  await expect(page.getByRole("row", { name: /CSV-CUSTOM-PRICES.*Custom CSV.*Monthly DCA/i })).toBeVisible();
-  await expect(page.getByRole("row", { name: /CSV-CUSTOM-PRICES.*Custom CSV.*Lump Sum/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /CSV-CUSTOM-PRICES.*Monthly DCA/i })).toBeVisible();
+  await expect(page.getByRole("row", { name: /CSV-CUSTOM-PRICES.*Lump Sum/i })).toBeVisible();
 });
 
 test("custom CSV upload gives specific parsing feedback", async ({ page }, testInfo) => {

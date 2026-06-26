@@ -2,7 +2,7 @@
 
 QuantDCA is a free financial analytics product for comparing dollar-cost-averaging strategies against lump sum and other contribution schedules. The public website is intentionally minimal; the working dashboard lives at `/app` as a clean Inter-based analytics UI.
 
-The product promise is simple: Replay real market history for any supported asset or custom CSV, compare strategies on equal capital, model fees and cash drag, and export every result.
+The product promise is simple: Replay real market history for any supported asset or custom CSV, compare strategies on equal capital, start with a clean core workflow, then open advanced analysis when the decision needs deeper proof.
 
 ## Product Surface
 
@@ -22,7 +22,9 @@ The dashboard preserves the full v1 workflow:
 - DCA, lump sum, and frequency variants.
 - Equalized-capital comparison by default, with an explicit as-configured toggle.
 - Transaction fees, cash drag on idle earmarked capital, and non-trading-day rollover to the next available price date.
-- Comparison charts, metrics, transaction schedules, and CSV / JSON exports.
+- Simple mode by default: Asset setup, strategy editing, core decision readout, portfolio-value chart, run ranking, transactions, and core CSV / JSON / ZIP exports.
+- Advanced mode for power users: Setup quality scoring, one-click strategy templates, compact / comfortable display density, scenario snapshots, methodology drawer, assumption-health checks, sensitivity stress previews, focused run inspection, chart modes, and chart annotation guide lines.
+- Comparison charts, metrics, transaction schedules, keyboard shortcuts, mobile result navigation, and sanitized exports that avoid provider-label leakage outside the asset search dropdown.
 - Deterministic mocked data for automated browser tests. Normal app runs do not silently fake market data.
 
 ## Brand System
@@ -205,7 +207,7 @@ Next steps for GitHub:
 - `src/server/providers/routed.ts`: Provider router that sends stock assets to EODHD, crypto assets to CoinAPI, and lets custom CSV bypass external providers.
 - `src/server/api.ts`: Request handlers for asset search and backtest execution.
 - `src/server/static.ts`: Production static-file path and content-type helpers.
-- `tests/e2e/dashboard.spec.ts`: Browser coverage for marketing navigation, search, configuration, comparison, charts, exports, CSV upload, errors, and mobile usability.
+- `tests/e2e/dashboard.spec.ts`: Browser coverage for marketing navigation, search, configuration, comparison, chart modes, annotations, scenario snapshots, exports, CSV upload, errors, density, and mobile usability.
 
 ## Data Notes
 
@@ -213,7 +215,11 @@ Cash drag is modeled as annualized growth / decay on idle earmarked capital befo
 
 Equalized-capital mode uses the largest planned strategy contribution amount as the comparison budget, then scales each DCA strategy's scheduled contributions proportionally so its initial / recurring timing shape is preserved. Total return and CAGR use target capital as the denominator because final portfolio value includes both invested market value and remaining cash. Total invested remains the gross amount actually deployed into purchases, including fees. Average cost / unit is fee-inclusive.
 
-Provider backtests accept up to 6 assets and 6 strategies per request. Provider-backed assets carry a visible `dataProvider` label plus provider routing metadata in API responses and exported JSON so selected stocks keep using EODHD, selected crypto keeps using CoinAPI, and same-ticker assets from different providers remain distinguishable. Custom CSV uploads are limited to 20,000 price rows and API request bodies are capped at 2 MB by default through `QDCA_MAX_REQUEST_BYTES`.
+Provider backtests accept up to 6 assets and 6 strategies per request. Provider-backed search results include a compact `dataProvider` label in the asset dropdown, while internal provider routing metadata keeps selected stocks on EODHD, selected crypto on CoinAPI, and same-ticker assets from different providers distinguishable without repeating provider labels throughout the dashboard or downloaded exports. The dashboard's Methodology drawer summarizes price basis, capital normalization, date rolling, and routing privacy in the app without exposing backend keys. Custom CSV uploads are limited to 20,000 price rows and API request bodies are capped at 2 MB by default through `QDCA_MAX_REQUEST_BYTES`.
+
+Simple / Advanced mode and display density are saved in the browser's local storage. Scenario snapshots are also saved locally. Copied scenario links restore the setup in the same browser profile and do not upload custom CSV data or saved strategies to a remote account. Exported JSON intentionally omits provider credentials and internal routing metadata; exported assets contain public asset fields only.
+
+Advanced mode's Sensitivity Lens is a deterministic stress preview derived from the current result paths. It adjusts final-value rankings for contribution scale, added per-buy fees, idle-cash drag, and start-window uncertainty so users can see whether the current winner appears robust before running a more exact follow-up scenario.
 
 Custom CSV uploads require row 1 titles, column A valid `YYYY-MM-DD` calendar dates, and column B positive USD prices. Extra columns are ignored.
 
